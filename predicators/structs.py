@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 from tabulate import tabulate
 
 import predicators.pretrained_model_interface
-import predicators.utils as utils  # pylint: disable=consider-using-from-import
+# Remove utils import to avoid circular import - will use lazy import when needed
 from predicators.settings import CFG
 
 
@@ -498,6 +498,7 @@ class Task:
             if atom not in vlm_atoms:
                 if not atom.holds(state):
                     return False
+        import predicators.utils as utils  # Lazy import to avoid circular import
         true_vlm_atoms = utils.query_vlm_for_atom_vals(vlm_atoms, state, vlm)
         return len(true_vlm_atoms) == len(vlm_atoms)
 

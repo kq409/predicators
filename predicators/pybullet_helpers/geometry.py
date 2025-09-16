@@ -8,7 +8,7 @@ import pybullet as p
 from pybullet_utils.transformations import euler_from_quaternion, \
     quaternion_from_euler
 
-from predicators.structs import Array
+# Remove top-level Array import to avoid circular import
 
 Pose3D = Tuple[float, float, float]
 Quaternion = Tuple[float, float, float, float]
@@ -67,8 +67,9 @@ def multiply_poses(*poses: Pose) -> Pose:
     return pose
 
 
-def matrix_from_quat(quat: Quaternion) -> Array:
+def matrix_from_quat(quat: Quaternion):
     """Get 3x3 rotation matrix from quaternion (xyzw)."""
+    from predicators.structs import Array  # Lazy import to avoid circular import
     return np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
 
 

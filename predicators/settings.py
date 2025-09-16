@@ -14,7 +14,8 @@ import numpy as np
 class GlobalSettings:
     """Unchanging settings."""
     # global parameters
-    num_train_tasks = 50
+    # num_train_tasks = 50
+    num_train_tasks = 1 #Changed for kitchen env.
     num_test_tasks = 50
     # Perform online learning for this many cycles or until this many
     # transitions have been collected, whichever happens first.
@@ -44,7 +45,8 @@ class GlobalSettings:
     # which is set in utils.reset_config(). If you want higher-quality videos
     # in unit tests, make sure to pass in a value for `render_state_dpi` into
     # your call to utils.reset_config().
-    render_state_dpi = 150
+    # render_state_dpi = 150
+    render_state_dpi = 300 #Changed for for high quality.
     approach_wrapper = None
     # Normally, excluding goal predicates does not make sense, because then
     # there is no goal for the agent to plan towards. This is intended to be
@@ -140,8 +142,10 @@ class GlobalSettings:
 
     # general pybullet parameters
     pybullet_draw_debug = False  # useful for annotating in the GUI
-    pybullet_camera_width = 335  # for high quality, use 1674
-    pybullet_camera_height = 180  # for high quality, use 900
+    # pybullet_camera_width = 335  # for high quality, use 1674
+    pybullet_camera_width = 1674  # for high quality, use 1674
+    # pybullet_camera_height = 180  # for high quality, use 900
+    pybullet_camera_height = 900  # for high quality, use 900
     pybullet_sim_steps_per_action = 20
     pybullet_max_ik_iters = 100
     pybullet_ik_tol = 1e-3
@@ -333,7 +337,9 @@ class GlobalSettings:
 
     # kitchen env parameters
     kitchen_use_perfect_samplers = False
+    # kitchen_use_perfect_samplers = True #Changed for kitchen env.
     kitchen_goals = "all"
+    # kitchen_goals = "boil_kettle" #Changed for kitchen env.
     kitchen_render_set_of_marks = False
     kitchen_use_combo_move_nsrts = False
     kitchen_randomize_init_state = False
@@ -458,7 +464,8 @@ class GlobalSettings:
     # need for a simulator. In the future, we could check to see if the
     # observed states match (at the abstract level) the expected states, and
     # replan if not. But for now, we just execute each step without checking.
-    bilevel_plan_without_sim = False
+    # bilevel_plan_without_sim = False
+    bilevel_plan_without_sim = True #Changed for kitchen env.
 
     # evaluation parameters
     log_dir = "logs"
@@ -468,7 +475,8 @@ class GlobalSettings:
     data_dir = "saved_datasets"
     video_dir = "videos"
     image_dir = "images"
-    video_fps = 2
+    # video_fps = 2
+    video_fps = 10 #Changed for for high quality.
     failure_video_mode = "longest_only"
 
     # dataset parameters
