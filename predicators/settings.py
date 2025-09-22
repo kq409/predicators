@@ -338,8 +338,8 @@ class GlobalSettings:
     # kitchen env parameters
     kitchen_use_perfect_samplers = False
     # kitchen_use_perfect_samplers = True #Changed for kitchen env.
-    kitchen_goals = "all"
-    # kitchen_goals = "boil_kettle" #Changed for kitchen env.
+    # kitchen_goals = "all"
+    kitchen_goals = "boil_kettle" #Changed for kitchen env.
     kitchen_render_set_of_marks = False
     kitchen_use_combo_move_nsrts = False
     kitchen_randomize_init_state = False
@@ -476,7 +476,7 @@ class GlobalSettings:
     video_dir = "videos"
     image_dir = "images"
     # video_fps = 2
-    video_fps = 10 #Changed for for high quality.
+    video_fps = 30 #Changed for for high quality.
     failure_video_mode = "longest_only"
 
     # dataset parameters

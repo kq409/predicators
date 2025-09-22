@@ -478,6 +478,83 @@ README of that repo suggests!"
             "obs_images": self.render()
         }
 
+    def _get_mocap_objects(self) -> List[Tuple[int, str, int]]:
+        """Get all mocap objects."""
+        model = self._gym_env.model
+        mocap_objects = []
+        
+        for i in range(model.nbody):
+            if model.body_mocapid[i] >= 0:
+                body_name = model.id2name(i, 'body')
+                mocap_id = model.body_mocapid[i]
+                mocap_objects.append((i, body_name, mocap_id))
+        
+        return mocap_objects
+
+    def _setup_mocap_objects(self, seed: int, train_or_test: str) -> None:
+        """Setup mocap objects initial positions."""
+        model = self._gym_env.model
+        data = self._gym_env.data
+        
+        # Get all mocap objects
+        mocap_objects = self._get_mocap_objects()
+        
+        if not mocap_objects:
+            print("Warning: No mocap objects found")
+            return
+        
+        rng = np.random.default_rng(seed)
+        
+        # Setup positions for each mocap object
+        for body_id, body_name, mocap_id in mocap_objects:
+            # Setup different positions strategies based on train_or_test
+            if train_or_test == "train":
+                base_positions = [
+                    [0.0, 0.5, 1.6],   # mocap_object_1
+                    [0.2, 0.5, 1.6],   # mocap_object_2
+                    [-0.2, 0.5, 1.6],  # mocap_object_3
+                ]
+            else:
+                base_positions = [
+                    [0.1, 0.6, 1.6],   # mocap_object_1
+                    [0.3, 0.6, 1.6],   # mocap_object_2
+                    [-0.1, 0.6, 1.6],  # mocap_object_3
+                ]
+            
+            # Select corresponding position (based on object index)
+            obj_index = int(body_name.split('_')[-1]) - 1
+            if 0 <= obj_index < len(base_positions):
+                base_pos = base_positions[obj_index]
+            else:
+                base_pos = [0.0, 0.5, 1.6]  # Default position
+            
+            # Add randomness
+            if CFG.kitchen_randomize_init_state:
+                offset_x = rng.uniform(-0.1, 0.1)
+                offset_y = rng.uniform(-0.1, 0.1)
+                offset_z = rng.uniform(-0.05, 0.05)
+                position = [
+                    base_pos[0] + offset_x,
+                    base_pos[1] + offset_y,
+                    base_pos[2] + offset_z
+                ]
+            else:
+                position = base_pos
+            
+            # Setup position
+            data.mocap_pos[mocap_id] = position
+            
+            # Setup orientation
+            if CFG.kitchen_randomize_init_state:
+                angle = rng.uniform(0, 2 * np.pi)
+                quat = [np.cos(angle/2), 0, 0, np.sin(angle/2)]
+            else:
+                quat = [1, 0, 0, 0]  # No rotation
+            
+            data.mocap_quat[mocap_id] = quat
+            
+            print(f"Setup mocap object {body_name} position: {position}, orientation: {quat}")
+
     @classmethod
     def _AtPreTurn_holds(cls, state: State, objects: Sequence[Object],
                          on_or_off: str) -> bool:
