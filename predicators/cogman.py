@@ -227,6 +227,11 @@ def run_episode_and_get_observations(
                 if act.has_option() and act.get_option() != curr_option:
                     curr_option = act.get_option()
                     metrics["num_options_executed"] += 1
+                    # Add real-time output
+                    print(f"Executing option: {curr_option.name}")
+                    if hasattr(curr_option, 'objects') and curr_option.objects:
+                        obj_names = [obj.name for obj in curr_option.objects]
+                        print(f"Objects: {obj_names}")
                 # Note: it's important to call monitor.observe() before
                 # env.step(), because the monitor may, for example, call
                 # env.render(), which outputs images of the current env
@@ -236,6 +241,7 @@ def run_episode_and_get_observations(
                 if monitor is not None:
                     monitor.observe(obs, act)
                     monitor_observed = True
+                # print(f"Executing action: {act.arr.tolist()}")
                 obs = env.step(act)
                 actions.append(act)
                 observations.append(obs)

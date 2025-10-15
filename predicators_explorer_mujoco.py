@@ -1,14 +1,20 @@
 import sys
 import numpy as np
-# import pybullet as p
+import pybullet as p
 import time
 import logging
 from typing import List, Tuple, Optional, Sequence, Collection, Dict, Any, cast, Set
 import random
 import json
+from collections import defaultdict
+from pathlib import Path
+import dill as pkl
+import os
 
 from predicators.structs import Action, Array, GroundAtom, Object, State, Type, ParameterizedOption, EnvironmentTask,\
     Image, Predicate, State, Type, Video
+from predicators.structs import Dataset, InteractionRequest, \
+InteractionResult, Metrics, Response, Task, Video
 from predicators import utils
 from predicators.settings import CFG
 from gymnasium.spaces import Box
@@ -21,6 +27,14 @@ from predicators.pybullet_helpers.robots import SingleArmPyBulletRobot
 from predicators.pybullet_helpers.geometry import Pose
 from predicators.pybullet_helpers.joint import JointPositions, get_joint_infos, get_joint_positions
 from predicators.pybullet_helpers.link import get_link_state
+from predicators.envs.kitchen import KitchenEnv
+from predicators.envs import create_new_env
+from predicators.ground_truth_models import get_gt_options, parse_config_included_options, get_gt_nsrts
+from predicators.datasets import create_dataset
+from predicators.perception import create_perceiver
+from predicators.approaches import ApproachFailure, ApproachTimeout, \
+    create_approach
+from predicators.cogman import CogMan, run_episode_and_get_observations
 
 #Import the functions that are to be tested:
 
@@ -28,6 +42,13 @@ from predicators.pybullet_helpers.motion_planning import run_motion_planning
 #The pick/place options to be tested are accessed via the env instance
 from predicators.pybullet_helpers.controllers import create_move_end_effector_to_pose_option,\
                                                     create_change_fingers_option
+
+                                                    # 导入planning相关模块
+
+
+
+from predicators.execution_monitoring import create_execution_monitor
+
 
 import copy
 
@@ -45,254 +66,336 @@ except (ImportError, RuntimeError):
     _MJKITCHEN_IMPORTED = False
 from predicators.envs import BaseEnv
 from predicators.envs.kitchen import KitchenEnv
-
-#Configure logging for better debugging outputs:
-#logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-logging.basicConfig(
-    level=logging.WARNING,                    
-    format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-
-#Defining test configuration, and overriding some default ones:
-CFG.use_gui = True
-
-CFG.seed = random.randint(0,10000)
-
-CFG.kitchen_use_perfect_samplers = True
-CFG.kitchen_goals = "knob_only"
-#Num of PyBullet physics steps per high-level Action in visualize_action_sequence
-CFG.pybullet_sim_steps_per_action = 20
-
-# 提高分辨率
-CFG.pybullet_camera_width = 1674  # 从335提高到1674
-CFG.pybullet_camera_height = 900  # 从180提高到900
-
-# 提高DPI
-CFG.render_state_dpi = 300  # 从150提高到300
-
-# 提高帧率
-CFG.video_fps = 10  # 从2提高到10
-
-CFG.make_test_videos = False
-CFG.make_failure_videos = False
-
-CFG.env = "kitchen"
-
-# 设置较少的训练任务数量，避免重复执行
-CFG.num_train_tasks = 1
-
-# 使用最简单的方法：直接调用reset然后只渲染
-print("正在创建Mujoco Kitchen环境...")
-
-# 导入gymnasium
 import gymnasium as mujoco_kitchen_gym
 
-# 直接创建gym环境
-gym_env = mujoco_kitchen_gym.make("FrankaKitchen-v1", 
-                                  render_mode="human",
-                                  ik_controller=True)
+script_start = time.perf_counter()
 
-print("Mujoco Kitchen环境创建成功！")
+#Defining test configuration, and overriding some default ones:
+args = {
+    "env": "kitchen",
+    "approach": "oracle",
+    "seed": random.randint(0,10000),
+    "use_gui": True,
+    "num_test_tasks": 1,
+    "kitchen_use_perfect_samplers": True,
+    "kitchen_goals": "find_banana",
+    "pybullet_sim_steps_per_action": 20,
+    "pybullet_camera_width": 1674,
+    "pybullet_camera_height": 900,
+    "render_state_dpi": 300,
+    "video_fps": 10,
+    "make_test_videos": False,
+    "make_failure_videos": False,
+    "log_file": "predicators/logs/predicators_explorer_mujoco.log",
+    "log_dir": "predicators/logs",
+    "loglevel": logging.DEBUG,
+}
 
-# 定义获取物体信息的函数
-def get_object_info(gym_env):
-    """获取环境中所有物体的信息"""
-    mujoco_model = gym_env.model
-    mujoco_data = gym_env.data
-    
-    object_info = {
-        'bodies': {},
-        'joints': {},
-        'sites': {},
-        'geoms': {}
-    }
-    
-    # 获取物体信息（简化版本）
-    for i in range(mujoco_model.nbody):
-        position = mujoco_data.xpos[i]
-        quat = mujoco_data.xquat[i]
-        object_info['bodies'][f'body_{i}'] = {
-            'id': i,
-            'position': position.copy(),
-            'quaternion': quat.copy()
-        }
-    
-    # 获取关节信息（简化版本）
-    for i in range(mujoco_model.njnt):
-        joint_pos = mujoco_data.qpos[i] if i < len(mujoco_data.qpos) else 0
-        object_info['joints'][f'joint_{i}'] = {
-            'id': i,
-            'position': joint_pos
-        }
-    
-    # 获取site信息（简化版本）
-    for i in range(mujoco_model.nsite):
-        site_pos = mujoco_data.site_xpos[i]
-        object_info['sites'][f'site_{i}'] = {
-            'id': i,
-            'position': site_pos.copy()
-        }
-    
-    return object_info
+utils.reset_config(args)
 
-# 定义添加新物体的函数
-def add_object_to_scene(gym_env, object_name, position, size=(0.05, 0.05, 0.05), color=(1, 0, 0, 1)):
-    """向场景中添加一个新的物体"""
-    print(f"尝试添加物体 {object_name} 到位置 {position}")
-    
-    try:
-        # 方法1：使用Mujoco的运行时添加功能
-        import mujoco
-        
-        # 获取模型和数据
-        model = gym_env.model
-        data = gym_env.data
-        
-        # 创建一个简单的盒子几何体
-        # 注意：这需要修改模型结构，在运行时添加比较复杂
-        print("注意：在运行时添加物体需要修改Mujoco模型结构")
-        print("建议的方法：")
-        print("1. 修改XML模型文件添加新物体")
-        print("2. 使用Mujoco的mocap功能添加可移动物体")
-        print("3. 使用Mujoco的site功能添加标记点")
-        
-        # 这里演示如何添加一个site（标记点）
-        # 注意：这需要模型支持动态添加
-        return False
-        
-    except Exception as e:
-        print(f"添加物体时出错: {e}")
-        return False
+print(CFG.log_dir)
 
-def add_mocap_object(gym_env, object_name, position, size=(0.05, 0.05, 0.05)):
-    """使用Mocap功能添加可移动物体"""
-    try:
-        # 检查是否有可用的mocap body
-        model = gym_env.model
-        data = gym_env.data
-        
-        # 查找可用的mocap body
-        mocap_bodies = []
-        for i in range(model.nbody):
-            if model.body_mocapid[i] >= 0:  # 这是一个mocap body
-                mocap_bodies.append((i, f"body_{i}"))
-        
-        if mocap_bodies:
-            print(f"找到 {len(mocap_bodies)} 个可用的mocap物体:")
-            for body_id, body_name in mocap_bodies:
-                print(f"  {body_id}: {body_name}")
-            
-            # 使用第一个可用的mocap body
-            mocap_id = model.body_mocapid[mocap_bodies[0][0]]
-            data.mocap_pos[mocap_id] = position
-            print(f"设置mocap物体 {mocap_bodies[0][1]} 位置为 {position}")
-            return True
+str_args = " ".join(sys.argv)
+# Create logs directory.
+os.makedirs(CFG.log_dir, exist_ok=True)
+# Log to stderr.
+handlers: List[logging.Handler] = [logging.StreamHandler()]
+if CFG.log_file:
+    handlers.append(logging.FileHandler(CFG.log_file, mode='w'))
+logging.basicConfig(level=CFG.loglevel,
+                    format="%(message)s",
+                    handlers=handlers,
+                    force=True)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+if CFG.log_file:
+    logging.info(f"Logging to {CFG.log_file}")
+logging.info(f"Running command: python {str_args}")
+logging.info("Full config:")
+logging.info(CFG)
+# logging.info(f"Git commit hash: {utils.get_git_commit_hash()}")
+
+# Create results directory.
+os.makedirs(CFG.results_dir, exist_ok=True)
+# Create the eval trajectories directory.
+os.makedirs(CFG.eval_trajectories_dir, exist_ok=True)
+
+def init_kitchen_env(env: KitchenEnv, seed: int, task_idx: int,
+                                       train_or_test: str) -> None:
+        env._gym_env.reset(seed=seed)
+
+        kettle_x_coord = -0.269
+        if train_or_test == "test":
+            kettle_x_coord = 0.169
+        kettle_y_coord = 0.4
+        if CFG.kitchen_randomize_init_state:
+            rng = np.random.default_rng(seed)
+            # For now, we only randomize the state such that the kettle
+            # is anywhere between burners 2 and 4. Later, we might add
+            # even more variation.
+            kettle_y_coord = rng.uniform(0.4, 0.55)
+        env._gym_env.set_body_position(  # type: ignore
+            "kettle", (kettle_x_coord, kettle_y_coord, 1.626))
+
+
+        env._setup_new_objects(seed, train_or_test)
+        env.get_object_centric_state_info()
+
+        env._current_task = env.get_task(train_or_test, task_idx)
+        print("TASK SET COMPLETE")
+        env._current_observation = env._current_task.init_obs
+        # Copy to prevent external changes to the environment's state.
+        # This default implementation of reset assumes that observations are
+        # states. Subclasses with different states should override.
+        assert isinstance(env._current_observation, State)
+        return env._current_observation.copy()
+
+env = create_new_env("kitchen", use_gui=CFG.use_gui)
+env.action_space.seed(CFG.seed)
+assert env.goal_predicates.issubset(env.predicates)
+
+included_preds, excluded_preds = utils.parse_config_excluded_predicates(
+        env)
+preds = utils.replace_goals_with_agent_specific_goals(
+        included_preds, excluded_preds,
+        env) if CFG.approach != "oracle" else included_preds
+
+env_train_tasks = env.get_train_tasks()
+perceiver = create_perceiver(CFG.perceiver)
+train_tasks = [perceiver.reset(t) for t in env_train_tasks]
+stripped_train_tasks = [
+    utils.strip_task(task, preds) for task in train_tasks
+]
+approach_train_tasks = [
+    task.replace_goal_with_alt_goal() for task in stripped_train_tasks
+]
+if CFG.option_learner == "no_learning":
+    # If we are not doing option learning, pass in all the environment's
+    # oracle options.
+    options = get_gt_options(env.get_name())
+else:
+    # Determine from the config which oracle options to include, if any.
+    options = parse_config_included_options(env)
+# Create the agent (approach).
+approach_name = CFG.approach
+if CFG.approach_wrapper:
+    approach_name = f"{CFG.approach_wrapper}[{approach_name}]"
+approach = create_approach(approach_name, preds, options, env.types,
+                               env.action_space, approach_train_tasks)
+
+if approach.is_learning_based:
+    # Create the offline dataset. Note that this needs to be done using
+    # the non-stripped train tasks because dataset generation may need
+    # to use the oracle predicates (e.g. demo data generation).
+    offline_dataset = create_dataset(env, train_tasks, options, preds)
+else:
+    offline_dataset = None
+
+# Create the cognitive manager.
+execution_monitor = create_execution_monitor(CFG.execution_monitor)
+cogman = CogMan(approach, perceiver, execution_monitor)
+
+obs = env.reset("test", 0)
+print("INIT COMPLETE")
+
+# obs = gym_env.reset("test", 0)
+# obs = gym_env.get_observation()
+state = env.state_info_to_state(obs["state_info"])
+
+
+# run oracle approach
+def run_pipline(env, cogman, approach_train_tasks, offline_dataset):
+    if cogman.is_learning_based:
+        pass
+    else:
+        results = run_testing(env, cogman)
+        results["num_offline_transitions"] = 0
+        results["num_online_transitions"] = 0
+        results["query_cost"] = 0.0
+        results["learning_time"] = 0.0
+        save_test_results(results, online_learning_cycle=None)
+
+def run_testing(env, cogman):
+    test_tasks = env.get_test_tasks()
+    if CFG.approach != "oracle":
+        test_tasks = [task.replace_goal_with_alt_goal() for task in test_tasks]
+    num_found_policy = 0
+    num_solved = 0
+    cogman.reset_metrics()
+    total_suc_time = 0.0
+    total_low_level_action_cost = 0.0
+    total_num_solve_timeouts = 0
+    total_num_solve_failures = 0
+    total_num_execution_timeouts = 0
+    total_num_execution_failures = 0
+
+    save_prefix = utils.get_config_path_str()
+    metrics: Metrics = defaultdict(float)
+    curr_num_nodes_created = 0.0
+    curr_num_nodes_expanded = 0.0
+    for test_task_idx, env_task in enumerate(test_tasks):
+        solve_start = time.perf_counter()
+        try:
+            # We call reset here, outside of run_episode_and_get_observations,
+            # so that we can log planning failures, timeouts, etc. This is
+            # mostly for legacy reasons (before cogman existed separately
+            # from approaches).
+            cogman.reset(env_task)
+        except (ApproachTimeout, ApproachFailure) as e:
+            logging.info(f"Task {test_task_idx+1} / {len(test_tasks)}: "
+                         f"Approach failed to solve with error: {e}")
+            if isinstance(e, ApproachTimeout):
+                total_num_solve_timeouts += 1
+            elif isinstance(e, ApproachFailure):
+                total_num_solve_failures += 1
+            if CFG.make_failure_videos and e.info.get("partial_refinements"):
+                video = utils.create_video_from_partial_refinements(
+                    e.info["partial_refinements"], env, "test", test_task_idx,
+                    CFG.horizon)
+                outfile = f"{save_prefix}__task{test_task_idx+1}_failure.mp4"
+                utils.save_video(outfile, video)
+            if CFG.crash_on_failure:
+                raise e
+            continue
+        solve_time = time.perf_counter() - solve_start
+        metrics[f"PER_TASK_task{test_task_idx}_solve_time"] = solve_time
+        metrics[
+            f"PER_TASK_task{test_task_idx}_nodes_created"] = cogman.metrics[
+                "total_num_nodes_created"] - curr_num_nodes_created
+        metrics[
+            f"PER_TASK_task{test_task_idx}_nodes_expanded"] = cogman.metrics[
+                "total_num_nodes_expanded"] - curr_num_nodes_expanded
+        curr_num_nodes_created = cogman.metrics["total_num_nodes_created"]
+        curr_num_nodes_expanded = cogman.metrics["total_num_nodes_expanded"]
+
+        num_found_policy += 1
+        make_video = False
+        solved = False
+        caught_exception = False
+        if CFG.make_test_videos or CFG.make_failure_videos:
+            monitor = utils.VideoMonitor(env.render)
         else:
-            print("没有找到可用的mocap物体")
-            return False
-            
-    except Exception as e:
-        print(f"添加mocap物体时出错: {e}")
-        return False
+            monitor = None
+        try:
+            # Now, measure success by running the policy in the environment.
+            traj, solved, execution_metrics = run_episode_and_get_observations(
+                cogman,
+                env,
+                "test",
+                test_task_idx,
+                max_num_steps=CFG.horizon,
+                monitor=monitor)
+            num_opt = execution_metrics["num_options_executed"]
+            metrics[f"PER_TASK_task{test_task_idx}_options_executed"] = num_opt
+            exec_time = execution_metrics["policy_call_time"]
+            metrics[f"PER_TASK_task{test_task_idx}_exec_time"] = exec_time
+            if CFG.refinement_data_include_execution_cost:
+                total_low_level_action_cost += (
+                    len(traj[1]) *
+                    CFG.refinement_data_low_level_execution_cost)
+            if CFG.save_eval_trajs:
+                # Save the successful trajectory, e.g., for playback on a
+                # robot.
+                traj_file = f"{save_prefix}__task{test_task_idx+1}.traj"
+                traj_file_path = Path(CFG.eval_trajectories_dir) / traj_file
+                # Include the original task too so we know the goal.
+                traj_data = {
+                    "task": env_task,
+                    "trajectory": traj,
+                    "pybullet_robot": CFG.pybullet_robot
+                }
+                with open(traj_file_path, "wb") as f:
+                    pkl.dump(traj_data, f)
+        except utils.EnvironmentFailure as e:
+            log_message = f"Environment failed with error: {e}"
+            caught_exception = True
+        except (ApproachTimeout, ApproachFailure) as e:
+            log_message = ("Approach failed at policy execution time with "
+                           f"error: {e}")
+            if isinstance(e, ApproachTimeout):
+                total_num_execution_timeouts += 1
+            elif isinstance(e, ApproachFailure):
+                total_num_execution_failures += 1
+            caught_exception = True
+        if solved:
+            log_message = "SOLVED"
+            num_solved += 1
+            total_suc_time += (solve_time + exec_time)
+            make_video = CFG.make_test_videos
+            video_file = f"{save_prefix}__task{test_task_idx+1}.mp4"
+            metrics[f"PER_TASK_task{test_task_idx}_num_steps"] = len(traj[1])
+        else:
+            if not caught_exception:
+                log_message = "Policy failed to reach goal"
+            if CFG.crash_on_failure:
+                raise RuntimeError(log_message)
+            make_video = CFG.make_failure_videos
+            video_file = f"{save_prefix}__task{test_task_idx+1}_failure.mp4"
+        logging.info(f"Task {test_task_idx+1} / {len(test_tasks)}: "
+                     f"{log_message}")
+        if make_video:
+            assert monitor is not None
+            video = monitor.get_video()
+            utils.save_video(video_file, video)
+    metrics["num_solved"] = num_solved
+    metrics["num_total"] = len(test_tasks)
+    metrics["avg_suc_time"] = (total_suc_time /
+                               num_solved if num_solved > 0 else float("inf"))
+    metrics["avg_ref_cost"] = ((total_low_level_action_cost +
+                                cogman.metrics["total_refinement_time"]) /
+                               num_solved if num_solved > 0 else float("inf"))
+    metrics["min_num_samples"] = cogman.metrics[
+        "min_num_samples"] if cogman.metrics["min_num_samples"] < float(
+            "inf") else 0
+    metrics["max_num_samples"] = cogman.metrics["max_num_samples"]
+    metrics["min_skeletons_optimized"] = cogman.metrics[
+        "min_num_skeletons_optimized"] if cogman.metrics[
+            "min_num_skeletons_optimized"] < float("inf") else 0
+    metrics["max_skeletons_optimized"] = cogman.metrics[
+        "max_num_skeletons_optimized"]
+    metrics["num_solve_timeouts"] = total_num_solve_timeouts
+    metrics["num_solve_failures"] = total_num_solve_failures
+    metrics["num_execution_timeouts"] = total_num_execution_timeouts
+    metrics["num_execution_failures"] = total_num_execution_failures
+    # Handle computing averages of total cogman metrics wrt the
+    # number of found policies. Note: this is different from computing
+    # an average wrt the number of solved tasks, which might be more
+    # appropriate for some metrics, e.g. avg_suc_time above.
+    for metric_name in [
+            "num_samples", "num_skeletons_optimized", "num_nodes_expanded",
+            "num_nodes_created", "num_nsrts", "num_preds", "plan_length",
+            "num_failures_discovered"
+    ]:
+        total = cogman.metrics[f"total_{metric_name}"]
+        metrics[f"avg_{metric_name}"] = (
+            total / num_found_policy if num_found_policy > 0 else float("inf"))
+    return metrics
 
-# 直接调用reset来满足gymnasium的要求
-print("正在调用reset以满足渲染要求...")
-obs, info = gym_env.reset()
-print("Reset完成，现在可以渲染了")
-print("注意：环境已重置但不会执行任务，只进行渲染")
+def save_test_results(results: Metrics,
+                       online_learning_cycle: Optional[int]) -> None:
+    num_solved = results["num_solved"]
+    num_total = results["num_total"]
+    avg_suc_time = results["avg_suc_time"]
+    logging.info(f"Tasks solved: {num_solved} / {num_total}")
+    logging.info(f"Average time for successes: {avg_suc_time:.5f} seconds")
+    outfile = (f"{CFG.results_dir}/{utils.get_config_path_str()}__"
+               f"{online_learning_cycle}.pkl")
+    # Save CFG alongside results.
+    outdata = {
+        "config": CFG,
+        "results": results.copy(),
+        # "git_commit_hash": utils.get_git_commit_hash()
+    }
+    # Dump the CFG, results, and git commit hash to a pickle file.
+    with open(outfile, "wb") as f:
+        pkl.dump(outdata, f)
+    # Before printing the results, filter out keys that start with the
+    # special prefix "PER_TASK_", to prevent an annoyingly long printout.
+    del_keys = [k for k in results if k.startswith("PER_TASK_")]
+    for k in del_keys:
+        del results[k]
+    logging.info(f"Test results: {results}")
+    logging.info(f"Wrote out test results to {outfile}")
 
-# 获取环境信息
-print("\n=== 环境信息 ===")
-print(f"观察空间形状: {obs.shape if hasattr(obs, 'shape') else type(obs)}")
-print(f"动作空间: {gym_env.action_space}")
-
-# 获取Mujoco模型信息
-mujoco_model = gym_env.model
-mujoco_data = gym_env.data
-
-print(f"\n=== Mujoco模型信息 ===")
-print(f"模型名称: {mujoco_model.names}")
-print(f"物体数量: {mujoco_model.nbody}")
-print(f"关节数量: {mujoco_model.njnt}")
-print(f"几何体数量: {mujoco_model.ngeom}")
-
-# 获取物体信息（使用更简单的方法）
-print(f"\n=== 物体信息 ===")
-print(f"总物体数量: {mujoco_model.nbody}")
-print("前10个物体的位置:")
-for i in range(min(10, mujoco_model.nbody)):
-    position = mujoco_data.xpos[i]
-    print(f"物体 {i}: 位置 [{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}]")
-
-# 获取关节信息
-print(f"\n=== 关节信息 ===")
-print(f"总关节数量: {mujoco_model.njnt}")
-print("前10个关节的位置:")
-for i in range(min(10, mujoco_model.njnt)):
-    joint_pos = mujoco_data.qpos[i] if i < len(mujoco_data.qpos) else 0
-    print(f"关节 {i}: 位置 {joint_pos:.3f}")
-
-# 获取site信息（这些是跟踪的物体）
-print(f"\n=== Site信息（跟踪的物体）===")
-print(f"总Site数量: {mujoco_model.nsite}")
-print("所有Site的位置:")
-for i in range(mujoco_model.nsite):
-    site_pos = mujoco_data.site_xpos[i]
-    print(f"Site {i}: 位置 [{site_pos[0]:.3f}, {site_pos[1]:.3f}, {site_pos[2]:.3f}]")
-
-# 尝试添加一个mocap物体（如果可用）
-print(f"\n=== 尝试添加新物体 ===")
-test_position = [0.0, 0.5, 1.6]  # 在厨房中央上方
-add_mocap_object(gym_env, "test_object", test_position)
-
-print("Mujoco环境已打开。按Ctrl+C退出。")
-print("注意：环境已准备就绪，只进行渲染。")
-
-try:
-    step_count = 0
-    print("开始渲染循环...")
-    print("按 'i' 键显示物体信息，按 'a' 键添加物体，按 Ctrl+C 退出")
-    
-    while True:
-        # 直接渲染gym环境，不执行任何动作
-        gym_env.render()
-        
-        # 每100步打印一次状态
-        if step_count % 100 == 0:
-            print(f"环境渲染中... 步骤: {step_count}")
-            
-            # 获取并显示关键物体信息
-            object_info = get_object_info(gym_env)
-            
-            # 显示一些关键物体的位置（使用索引而不是名称）
-            print("关键物体位置:")
-            # 显示前几个site的位置
-            for i in range(min(5, len(object_info['sites']))):
-                site_key = f'site_{i}'
-                if site_key in object_info['sites']:
-                    pos = object_info['sites'][site_key]['position']
-                    print(f"  Site {i}: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
-            
-            # 显示前几个body的位置
-            for i in range(min(5, len(object_info['bodies'])):
-                body_key = f'body_{i}'
-                if body_key in object_info['bodies']:
-                    pos = object_info['bodies'][body_key]['position']
-                    print(f"  Body {i}: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
-        
-        step_count += 1
-        time.sleep(0.1)  # 控制渲染频率
-        
-        # 检查键盘输入（这是一个简化的实现）
-        # 在实际应用中，你可能需要使用更复杂的输入处理
-        # 这里只是演示如何获取物体信息
-        
-except KeyboardInterrupt:
-    print("\n正在关闭环境...")
-    print("感谢使用Mujoco Kitchen环境查看器！")
-except Exception as e:
-    print(f"运行时出错: {e}")
-    print(f"错误类型: {type(e)}")
-    print(f"环境类型: {type(gym_env)}")
+run_pipline(env, cogman, approach_train_tasks, offline_dataset)
+script_time = time.perf_counter() - script_start
+logging.info(f"\n\nMain script terminated in {script_time:.5f} seconds")

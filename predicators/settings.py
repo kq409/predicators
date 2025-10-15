@@ -16,7 +16,8 @@ class GlobalSettings:
     # global parameters
     # num_train_tasks = 50
     num_train_tasks = 1 #Changed for kitchen env.
-    num_test_tasks = 50
+    # num_test_tasks = 50
+    num_test_tasks = 1 #Changed for kitchen env.
     # Perform online learning for this many cycles or until this many
     # transitions have been collected, whichever happens first.
     num_online_learning_cycles = 10
