@@ -628,6 +628,7 @@ class GlobalSettings:
 
     # refinement cost estimation parameters
     refinement_estimator = "oracle"  # default refinement cost estimator
+    # refinement_estimator = "per_skeleton"  # default refinement cost estimator
     refinement_estimation_num_skeletons_generated = 8
 
     # refinement data collection parameters
@@ -806,6 +807,7 @@ class GlobalSettings:
                     "exit_garage": 1000,
                     "tools": 1000,
                     "stick_button": 1000,
+                    "kitchen": 1000,    # TODO: Changed for kitchen env.
                     "stick_button_move": 1000
                 })[args.get("env", "")],
 

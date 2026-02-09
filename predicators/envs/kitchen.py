@@ -11,9 +11,13 @@ from PIL import ImageDraw
 
 try:
     import gymnasium as mujoco_kitchen_gym
+    from gymnasium_robotics.utils import mujoco_utils
+    import mujoco
     from gymnasium_robotics.utils.mujoco_utils import get_joint_qpos, \
         get_site_xmat, get_site_xpos
     from gymnasium_robotics.utils.rotations import mat2quat
+    from gymnasium_robotics.utils.rotations import euler2quat, quat2euler, \
+        subtract_euler
     _MJKITCHEN_IMPORTED = True
 except (ImportError, RuntimeError):
     _MJKITCHEN_IMPORTED = False
@@ -39,6 +43,13 @@ _TRACKED_SITE_TO_JOINT = {
     "hinge_site2": "left_hinge_cabinet",
 }
 
+_CONTAINER_SITE_TO_NAME = {
+    "hinge_site1": "hinge1",
+    "hinge_site2": "hinge2",
+    "slide_site": "slide",
+    "microhandle_site": "microhandle",
+}
+
 _TRACKED_BODIES = ["Burner 1", "Burner 2", "Burner 3", "Burner 4"]
 KETTLE_ON_BURNER1_POS = [0.169, 0.35, 1.626]
 KETTLE_ON_BURNER2_POS = [-0.269, 0.35, 1.626]
@@ -51,7 +62,7 @@ class KitchenEnv(BaseEnv):
 
     # Types
     object_type = Type("object", ["x", "y", "z"])
-    gripper_type = Type("gripper", ["x", "y", "z", "qw", "qx", "qy", "qz"],
+    gripper_type = Type("gripper", ["x", "y", "z", "qw", "qx", "qy", "qz", "finger1_pos", "finger2_pos"],
                         parent=object_type)
     on_off_type = Type("on_off", ["x", "y", "z", "angle"], parent=object_type)
     hinge_door_type = Type("hinge_door", ["x", "y", "z", "angle", "observed"],
@@ -60,7 +71,7 @@ class KitchenEnv(BaseEnv):
     switch_type = Type("switch", ["x", "y", "z", "angle"], parent=on_off_type)
     surface_type = Type("surface", ["x", "y", "z"], parent=object_type)
     kettle_type = Type("kettle", ["x", "y", "z"], parent=object_type)
-    banana_type = Type("banana", ["x", "y", "z"], parent=object_type)
+    banana_type = Type("banana", ["x", "y", "z", "found"], parent=object_type)
 
     obj_name_to_type = {
         "gripper": gripper_type,
@@ -81,6 +92,12 @@ class KitchenEnv(BaseEnv):
         "banana": banana_type,
     }
 
+    # Class level dictionary to store container observed status
+    _container_observed_status: Dict[str, bool] = {}
+    
+    # Class level dictionary to store banana found status
+    _banana_found_status: Dict[str, bool] = {}
+
     at_pre_turn_atol = 0.1  # tolerance for AtPreTurnOn/Off
     ontop_atol = 0.18  # tolerance for OnTop
     on_angle_thresh = -0.28  # -0.4  # dial is On if less than this threshold
@@ -88,11 +105,16 @@ class KitchenEnv(BaseEnv):
     microhandle_open_thresh = -0.65
     hinge_open_thresh = 0.084
     cabinet_open_thresh = 0.02
+    # slide_open_thresh = 0.2
+    slide_open_thresh = 0.15
     at_pre_pushontop_yz_atol = 0.1  # tolerance for AtPrePushOnTop
     at_pre_pullontop_yz_atol = 0.04  # tolerance for AtPrePullOnTop
     at_pre_pushontop_x_atol = 1.0  # other tolerance for AtPrePushOnTop
     observe_tol = 0.15  # tolerance for observation position
-    banana_detection_thresh = 0.5  # threshold for banana detection
+    banana_detection_thresh = 0.75  # threshold for banana detection
+    at_pre_pick_up_tol = 0.1  # tolerance for AtPrePickUp
+    pick_up_tol = 0.05  # tolerance for picking up banana
+    gripper_closed_threshold = 0.05  # threshold for gripper closed
 
     obj_name_to_pre_push_dpos = {
         ("kettle", "on"): (-0.05, -0.2, 0.00),
@@ -110,8 +132,23 @@ class KitchenEnv(BaseEnv):
         # ("hinge2", "on"): (0.1, -0.15, 0.0),
         ("hinge2", "on"): (0.02, -0.05, -0.13),    # Changed for opening hinge2
         ("hinge2", "off"): (-0.1, -0.1, 0.0),
-        ("slide", "on"): (-0.2, -0.12, 0.0),
+        # ("slide", "on"): (-0.2, -0.12, 0.0),
+        ("slide", "on"): (-0.07, -0.12, 0.0),
         ("slide", "off"): (0.15, -0.1, 0.0),
+    }
+
+    obj_name_to_pre_pick_dpos = {
+        ("banana", "hinge2"): (0.0, -0.05, 0.05),
+        ("banana", "slide"): (0.0, 0.05, 0.0),
+        ("banana", "microhandle"): (0.0, -0.05, 0.05),
+        
+    }
+
+    obj_name_to_xyz = {
+        "hinge1": np.array([-0.682, 0.582, 2.6]),
+        "hinge2": np.array([-0.526, 0.582, 2.6]),
+        "slide": np.array([-0.108, 0.607, 2.6]),
+        "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
     }
 
     def __init__(self, use_gui: bool = True) -> None:
@@ -131,6 +168,16 @@ README of that repo suggests!"
         self._gym_env = mujoco_kitchen_gym.make("FrankaKitchen-v1",
                                                 render_mode=render_mode,
                                                 ik_controller=True)
+
+        # Initialize all container observed status to False
+        for container_name in _CONTAINER_SITE_TO_NAME.values():
+            if container_name not in self._container_observed_status:
+                self._container_observed_status[container_name] = False
+        
+        # Initialize banana found status to False
+        banana_name = "banana"
+        if banana_name not in self._banana_found_status:
+            self._banana_found_status[banana_name] = False
 
     def _generate_train_tasks(self) -> List[EnvironmentTask]:
         return self._get_tasks(num=CFG.num_train_tasks, train_or_test="train")
@@ -165,6 +212,17 @@ README of that repo suggests!"
         for body in _TRACKED_BODIES:
             body_id = mujoco_model_names.body_name2id[body]
             state_info[body] = mujoco_data.xpos[body_id].copy()
+
+        # Get gripper finger joint positions
+        # Common Franka gripper joint names
+        finger_joint_names = ["robot:finger_joint1", "robot:finger_joint2"]
+        for finger_joint_name in finger_joint_names:
+            try:
+                finger_pos = get_joint_qpos(mujoco_model, mujoco_data, finger_joint_name)
+                state_info[finger_joint_name] = finger_pos.copy()
+            except (KeyError, AttributeError):
+                # If joint name doesn't exist, try alternative names
+                pass
 
         # Add new objects to state info
         # self._add_new_objects_to_state_info(state_info, mujoco_model, mujoco_data)
@@ -286,6 +344,8 @@ README of that repo suggests!"
         TurnedOn = self._pred_name_to_pred["TurnedOn"]
         KettleBoiling = self._pred_name_to_pred["KettleBoiling"]
         KnobAndBurnerLinked = self._pred_name_to_pred["KnobAndBurnerLinked"]
+        BananaFound = self._pred_name_to_pred["BananaFound"]
+        BananaOnTop = self._pred_name_to_pred["BananaOnTop"]
         goal_preds = set()
         if CFG.kitchen_goals in ["all", "kettle_only"]:
             goal_preds.add(OnTop)
@@ -297,6 +357,10 @@ README of that repo suggests!"
         if CFG.kitchen_goals in ["all", "boil_kettle"]:
             goal_preds.add(KettleBoiling)
             goal_preds.add(KnobAndBurnerLinked)
+        if CFG.kitchen_goals in ["all", "find_banana"]:
+            goal_preds.add(BananaFound)
+        if CFG.kitchen_goals in ["all", "take_out_banana"]:
+            goal_preds.add(BananaOnTop)
         return goal_preds
 
     @classmethod
@@ -331,15 +395,17 @@ README of that repo suggests!"
             # New predicates for banana search
             Predicate("AtPreObserve", [cls.gripper_type, cls.hinge_door_type],
                       cls._AtPreObserve_holds),
+            Predicate("AtPrePickUp", [cls.gripper_type, cls.banana_type, cls.object_type],
+                      cls._AtPrePickUp_holds),
             Predicate("Observed", [cls.hinge_door_type], cls._Observed_holds),
             Predicate("NotObserved", [cls.hinge_door_type], cls._NotObserved_holds),
-            Predicate("ContainsBanana", [cls.hinge_door_type], cls._ContainsBanana_holds),
-            Predicate("NotContainsBanana", [cls.hinge_door_type], cls._NotContainsBanana_holds),
-            # Predicate("BananaIn", [cls.banana_type, cls.hinge_door_type], cls._BananaIn_holds),
+            Predicate("ContainsBanana", [cls.gripper_type, cls.hinge_door_type], cls._ContainsBanana_holds),
+            Predicate("NotContainsBanana", [cls.gripper_type, cls.hinge_door_type], cls._NotContainsBanana_holds),
             Predicate("BananaFound", [cls.banana_type], cls._BananaFound_holds),
             # Predicate("BananaVisible", [cls.banana_type], cls._BananaVisible_holds),
             Predicate("CanObserve", [cls.hinge_door_type], cls._CanObserve_holds),
-            # Predicate("NeedsToOpen", [cls.hinge_door_type], cls._NeedsToOpen_holds),
+            Predicate("BananaOnTop", [cls.banana_type, cls.object_type], cls._BananaOnTop_holds),
+            Predicate("BananaPickedUp", [cls.gripper_type, cls.banana_type], cls._BananaPickedUp_holds),
         }
 
         return {p.name: p for p in preds}
@@ -369,6 +435,7 @@ README of that repo suggests!"
         seed = utils.get_task_seed(train_or_test, task_idx)
         self._current_observation = self._reset_initial_state_from_seed(
             seed, train_or_test)
+        print("Reset complete")
         return self._copy_observation(self._current_observation)
 
     def simulate(self, state: State, action: Action) -> State:
@@ -391,6 +458,10 @@ README of that repo suggests!"
         """Get state from state info dictionary."""
         assert "EEF" in state_info  # sanity check
         state_dict = {}
+
+        finger1_value = state_info["robot:finger_joint1"][0]    # Value the larger, the more open
+        finger2_value = state_info["robot:finger_joint2"][0]    # Value the larger, the more open
+
         for key, val in state_info.items():
             if key == "EEF":
                 obj = cls.object_name_to_object("gripper")
@@ -402,9 +473,13 @@ README of that repo suggests!"
                     "qx": val[4],
                     "qy": val[5],
                     "qz": val[6],
+                    "finger1_pos": finger1_value,
+                    "finger2_pos": finger2_value,
                 }
             elif key in _TRACKED_SITE_TO_JOINT.values():
                 continue  # used below
+            elif "finger" in key.lower() and "joint" in key.lower():
+                continue  # already processed above
             else:
                 obj_name = key.replace("_site", "").replace(" ", "").lower()
                 obj = cls.object_name_to_object(obj_name)
@@ -413,6 +488,11 @@ README of that repo suggests!"
                     angle = state_info[joint][0]
                 else:
                     angle = 0
+                if key in _CONTAINER_SITE_TO_NAME:
+                    container_name = _CONTAINER_SITE_TO_NAME[key]
+                    observed = cls.get_container_observed(container_name)
+                else:
+                    observed = False
                 if obj.is_instance(cls.hinge_door_type):
                     # For containers, include observed status
                     state_dict[obj] = {
@@ -420,7 +500,17 @@ README of that repo suggests!"
                         "y": val[1],
                         "z": val[2],
                         "angle": angle,
-                        "observed": False  # Initialize as not observed
+                        "observed": observed  # Initialize as not observed
+                    }
+                elif obj.is_instance(cls.banana_type):
+                    # For banana, include found status
+                    banana_name = obj.name if hasattr(obj, 'name') else "banana"
+                    found = cls._banana_found_status.get(banana_name, False)
+                    state_dict[obj] = {
+                        "x": val[0],
+                        "y": val[1],
+                        "z": val[2],
+                        "found": found  # Initialize found status
                     }
                 else:
                     state_dict[obj] = {
@@ -436,18 +526,51 @@ README of that repo suggests!"
             container = cls.object_name_to_object(container_name)
             if container not in state_dict:
                 # If container not in state_dict, create it with default values
+                observed = cls._container_observed_status.get(container_name, False)
                 state_dict[container] = {
-                    "x": 0.0, "y": 0.0, "z": 0.0, "angle": 0.0, "observed": False
+                    "x": 0.0, "y": 0.0, "z": 0.0, "angle": 0.0, "observed": observed
                 }
+        
+        # Ensure banana is in state_dict with found status
+        banana = cls.object_name_to_object("banana")
+        if banana not in state_dict:
+            banana_name = banana.name if hasattr(banana, 'name') else "banana"
+            found = cls._banana_found_status.get(banana_name, False)
+            state_dict[banana] = {
+                "x": 0.0, "y": 0.0, "z": 0.0, "found": found
+            }
         
         state = utils.create_state_from_dict(state_dict)
         state.simulator_state = {}
         return state
 
+    @classmethod
+    def set_container_observed(cls, container_name: str, observed: bool = True) -> None:
+        """Set the observed status of a container."""
+        if container_name in _CONTAINER_SITE_TO_NAME.values():
+            cls._container_observed_status[container_name] = observed
+
+    @classmethod
+    def get_container_observed(cls, container_name: str) -> bool:
+        """Get the observed status of a container."""
+        return cls._container_observed_status.get(container_name, False)
+
+    @classmethod
+    def set_banana_found(cls, banana_name: str = "banana", found: bool = True) -> None:
+        """Set the found status of banana."""
+        cls._banana_found_status[banana_name] = found
+
+    @classmethod
+    def get_banana_found(cls, banana_name: str = "banana") -> bool:
+        """Get the found status of banana."""
+        return cls._banana_found_status.get(banana_name, False)
+
     def goal_reached(self) -> bool:
         state = self.state_info_to_state(
             self._current_observation["state_info"])
         kettle = self.object_name_to_object("kettle")
+        gripper = self.object_name_to_object("gripper")
+        burner2 = self.object_name_to_object("burner2")
         burner4 = self.object_name_to_object("burner4")
         burner3 = self.object_name_to_object("burner3")
         knob4 = self.object_name_to_object("knob4")
@@ -465,6 +588,8 @@ README of that repo suggests!"
         kettle_boiling3 = self._KettleBoiling_holds(state,
                                                     [kettle, burner3, knob3])
         banana_found = self._BananaFound_holds(state, [banana])
+        take_out_banana = self._BananaOnTop_holds(state, [banana, burner2])
+
         if goal_desc == ("Move the kettle to the back burner and turn it on; "
                          "also turn on the light"):
             return kettle_on_burner4 and knob4_turned_on and light_turned_on
@@ -486,6 +611,8 @@ README of that repo suggests!"
             return kettle_boiling3
         if goal_desc == ("Find the banana"):
             return banana_found
+        if goal_desc == ("Take out the banana"):
+            return take_out_banana
         raise NotImplementedError(f"Unrecognized goal: {goal_desc}")
 
     def _get_tasks(self, num: int,
@@ -493,7 +620,7 @@ README of that repo suggests!"
         tasks = []
 
         assert CFG.kitchen_goals in [
-            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana"
+            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana", "take_out_banana"
         ]
         goal_descriptions: List[str] = []
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -519,6 +646,8 @@ README of that repo suggests!"
                     "Move the kettle to the back right burner and turn it on")
         if CFG.kitchen_goals in ["all", "find_banana"]:
             goal_descriptions.append("Find the banana")
+        if CFG.kitchen_goals in ["all", "take_out_banana"]:
+            goal_descriptions.append("Take out the banana")
         if CFG.kitchen_goals == "all":
             desc = (
                 "Move the kettle to the back left burner and turn it on; also "
@@ -560,6 +689,8 @@ README of that repo suggests!"
             "state_info": self.get_object_centric_state_info(),
             "obs_images": self.render()
         }
+    def get_screenshot(self) -> Image:
+        return self.render()
 
     def _get_new_objects(self, object_name: str) -> List[Tuple[int, str, int]]:
         """Get all new objects."""
@@ -585,6 +716,12 @@ README of that repo suggests!"
             print(f"Error getting {object_name} position: {e}")
             return None
 
+    def set_joint(self, joint_name: str, value: float):
+        model = self._gym_env.model          # MuJoCo mjModel
+        data = self._gym_env.data            # MuJoCo mjData
+        mujoco_utils.set_joint_qpos(model, data, joint_name, value)
+        mujoco.mj_forward(model, data) 
+
     def _setup_new_objects(self, seed: int, train_or_test: str) -> None:
         """Set up new objects."""
         rng = np.random.default_rng(seed)
@@ -597,11 +734,17 @@ README of that repo suggests!"
         else:
             object_positions = [
                 # [-0.8, 0.7, 1.7], # Microwave
-                [-0.45, 0.85, 2.5], # Upper right cabinet
-                # [0.25, 0.9, 2.5], # Upper slide door
+                # [-0.45, 0.8, 2.4], # Upper right cabinet
+                [-0.025, 0.77, 2.4], # Upper slide door
                 # [-0.224, 0.71, 2.6], # Hinge2 center, for test only!
+                # [-0.2, 0.5, 2.0], # Lookat marker position
             ]
-        
+        # quaternion = [0.70710678, 0.70710678, 0.0, 0.0]
+        # quaternion = [0.0, 0.0, 0.0, 1.0]   # No rotation
+        # quaternion = [0.70710678, 0.0, 0.70710678, 0.0] # 90 degree rotation around y axis
+        # quaternion = [0.70710678, 0.0, 0.0, 0.70710678] # 90 degree rotation around z axis
+        euler = (0.0, 0.0, 1 * np.pi / 64)
+        quaternion = euler2quat(euler)
         # Set the position of each object
         for i, pos in enumerate(object_positions):
             object_name = "banana" if i == 0 else f"banana_{i+1}"
@@ -621,7 +764,7 @@ README of that repo suggests!"
             
             try:
                 # Now we can use set_body_position
-                self._gym_env.set_body_position(object_name, final_pos)
+                self.set_joint(object_name, np.concatenate([final_pos, quaternion]))
                 print(f"Successfully set {object_name} position: {final_pos}")
             except Exception as e:
                 print(f"Failed to set {object_name} position: {e}")
@@ -757,11 +900,10 @@ README of that repo suggests!"
             # if obj.name in ("hinge1", "hinge2"):
             #     return state.get(obj, "angle") > cls.hinge_open_thresh    # Changed for opening hinge2
             if obj.name in ("hinge2"):
-                return state.get(obj, "x") > -0.25
+                return state.get(obj, "x") > -0.22
             if obj.name == "microhandle":
-                return state.get(
-                    obj, "x") < cls.microhandle_open_thresh - thresh_pad
-            return state.get(obj, "x") > cls.cabinet_open_thresh + thresh_pad
+                return state.get(obj, "x") < cls.microhandle_open_thresh - thresh_pad
+            return state.get(obj, "x") > cls.slide_open_thresh + thresh_pad
         return False
 
     @classmethod
@@ -852,7 +994,10 @@ README of that repo suggests!"
         else:
             # Default observation position
             observe_pos = container_xyz + np.array([0.0, -0.2, 0.0])
-        return np.allclose(gripper_xyz, observe_pos, atol=cls.observe_tol)
+        # return np.allclose(gripper_xyz, observe_pos, atol=cls.observe_tol)
+        # TODO: Assume always in observation position for now
+        return True
+        # return np.allclose(gripper_xyz, observe_pos, atol=0.5)
 
     @classmethod
     def _Observed_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -869,8 +1014,11 @@ README of that repo suggests!"
     @classmethod
     def _ContainsBanana_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if container contains banana."""
-        container = objects[0]
+        gripper, container = objects
         banana = cls.object_name_to_object("banana")
+
+        if cls._BananaPickedUp_holds(state, [gripper, banana]) == True:
+            return False
         
         # Get banana position
         banana_xyz = np.array([
@@ -885,11 +1033,7 @@ README of that repo suggests!"
         
         for container_name in all_containers:
             container_obj = cls.object_name_to_object(container_name)
-            container_xyz = np.array([
-                state.get(container_obj, "x"),
-                state.get(container_obj, "y"),
-                state.get(container_obj, "z")
-            ])
+            container_xyz = cls.obj_name_to_xyz[container_name]
             distance = np.linalg.norm(banana_xyz - container_xyz)
             container_distances[container_name] = distance
         
@@ -907,7 +1051,8 @@ README of that repo suggests!"
     @classmethod
     def _NotContainsBanana_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if container does not contain banana."""
-        return not cls._ContainsBanana_holds(state, objects)
+        gripper, container = objects
+        return not cls._ContainsBanana_holds(state, [gripper, container])
 
     # @classmethod
     # def _BananaIn_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -930,14 +1075,38 @@ README of that repo suggests!"
 
     @classmethod
     def _BananaFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        """Check if banana has been found in any observed container."""
+        """Check if banana has been found.
+        
+        First check state variable banana.found (set by ObserveContainer option).
+        If not exist or False, check environment level status.
+        Finally check real state (backward compatibility).
+        """
         banana = objects[0]
+        
+        # First check state variable banana.found (now banana type contains found feature)
+        try:
+            found_in_state = state.get(banana, "found")
+            if found_in_state:
+                return True
+        except (ValueError, KeyError):
+            pass  # feature not exist, continue checking other way
+        
+        # Second check environment level status (set by set_banana_found)
+        banana_name = banana.name if hasattr(banana, 'name') else "banana"
+        if banana_name in cls._banana_found_status:
+            found_status = cls._banana_found_status[banana_name]
+            if found_status:
+                return True
+        
+        # Backward compatibility: if state variable and environment status do not exist or are False, check real state
+        gripper = cls.object_name_to_object("gripper")
         # Check if any container contains the banana AND has been observed
         containers = ["hinge1", "hinge2", "slide", "microhandle"]
         for container_name in containers:
             container = cls.object_name_to_object(container_name)
-            if (cls._ContainsBanana_holds(state, [container]) and 
-                cls._Observed_holds(state, [container])):
+            contains_banana = cls._ContainsBanana_holds(state, [gripper, container])
+            observed = cls._Observed_holds(state, [container])
+            if (contains_banana and observed):
                 return True
         return False
 
@@ -950,28 +1119,91 @@ README of that repo suggests!"
         # Assume countertop height is around 1.6
         return banana_z > 1.5
 
+    # @classmethod
+    # def _CanObserve_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+    #     """Check if container can be observed (open and not observed)."""
+    #     container = objects[0]
+    #     # Check if container is open (using the appropriate method based on container type)
+    #     is_open = False
+    #     if container.name in ["hinge2", "slide", "microhandle"]:
+    #         is_open = cls.Open_holds(state, [container])
+    #     elif container.name in ["hinge1"]:
+    #         is_open = False
+    #     else:
+    #         # For other container types, assume they can be observed if not observed
+    #         is_open = True
+    #     return (is_open and cls._NotObserved_holds(state, [container]))
+
     @classmethod
     def _CanObserve_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if container can be observed (open and not observed)."""
         container = objects[0]
-        # Check if container is open (using the appropriate method based on container type)
-        is_open = False
-        if container.name in ["hinge1", "hinge2", "slide", "microhandle"]:
-            is_open = cls.Open_holds(state, [container])
+        if container.name in ["hinge2", "slide", "microhandle"]:
+            return True
+        elif container.name in ["hinge1"]:
+            return False
         else:
-            # For other container types, assume they can be observed if not observed
-            is_open = True
-        return (is_open and cls._NotObserved_holds(state, [container]))
+            return True
+
 
     @classmethod
-    def _NeedsToOpen_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        """Check if container needs to be opened for observation."""
-        container = objects[0]
-        # Check if container is closed (using the appropriate method based on container type)
-        is_closed = False
-        if container.name in ["hinge1", "hinge2", "slide", "microhandle"]:
-            is_closed = cls.Closed_holds(state, [container])
-        else:
-            # For other container types, assume they don't need to be opened
-            is_closed = False
-        return (is_closed and cls._NotObserved_holds(state, [container]))
+    def get_pre_pick_delta_pos(cls, objects: Sequence[Object]) -> Tuple[float, float, float]:
+        """Get dx, dy, dz offset for pushing."""
+        obj, container = objects
+        try:
+            if container is None or not hasattr(container, 'name'):
+                return (0.0, 0.0, 0.0)
+            dx, dy, dz = cls.obj_name_to_pre_pick_dpos[(obj.name, container.name)]
+        except KeyError:
+            dx, dy, dz = (0.0, 0.0, 0.0)
+        return (dx, dy, dz)
+
+    @classmethod
+    def _AtPrePickUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if gripper is in pre-pick up position."""
+        gripper, object, obj_place = objects
+        gripper_xyz = np.array([
+            state.get(gripper, "x"),
+            state.get(gripper, "y"),
+            state.get(gripper, "z")
+        ])
+        dpos = cls.get_pre_pick_delta_pos([object, obj_place])
+        object_xyz = np.array([
+            state.get(object, "x"),
+            state.get(object, "y"),
+            state.get(object, "z")
+        ])
+        obj_place_xyz = np.array([
+            state.get(obj_place, "x"),
+            state.get(obj_place, "y"),
+            state.get(obj_place, "z")
+        ])
+        return np.allclose(gripper_xyz, object_xyz + dpos, atol=cls.at_pre_pick_up_tol)
+
+    @classmethod
+    def _BananaOnTop_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if banana is on top of the surface."""
+        banana, obj_place = objects
+        banana_xy = [state.get(banana, "x"), state.get(banana, "y")]
+        obj_place_xy = [state.get(obj_place, "x"), state.get(obj_place, "y")]
+        z_delta = state.get(banana, "z") - state.get(obj_place, "z")
+        return np.allclose(banana_xy, obj_place_xy, atol=cls.ontop_atol) and state.get(banana, "z") > state.get(obj_place, "z") and z_delta < 0.02
+
+    @classmethod
+    def _BananaPickedUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if banana has been picked up."""
+        gripper, banana = objects
+        gripper_xyz = np.array([
+            state.get(gripper, "x"),
+            state.get(gripper, "y"),
+            state.get(gripper, "z")
+        ])
+        banana_xyz = np.array([
+            state.get(banana, "x"),
+            state.get(banana, "y"),
+            state.get(banana, "z")
+        ])
+        finger1_pos = state.get(gripper, "finger1_pos")
+        finger2_pos = state.get(gripper, "finger2_pos")
+        # print(f"finger1_pos: {finger1_pos}, finger2_pos: {finger2_pos}")
+        return np.allclose(gripper_xyz, banana_xyz, atol=cls.pick_up_tol) and finger1_pos > cls.gripper_closed_threshold and finger2_pos > cls.gripper_closed_threshold

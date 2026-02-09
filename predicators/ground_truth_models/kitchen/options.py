@@ -11,6 +11,9 @@ from predicators.pybullet_helpers.geometry import Pose3D
 from predicators.structs import Action, Array, GroundAtom, Object, \
     ParameterizedOption, ParameterizedTerminal, Predicate, State, Type
 
+import sys
+
+
 try:
     from gymnasium_robotics.utils.rotations import euler2quat, quat2euler, \
         subtract_euler
@@ -31,6 +34,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
     push_lr_thresh_pad: ClassVar[float] = 0.02
     push_microhandle_thresh_pad: ClassVar[float] = 0.02
     turn_knob_tol: ClassVar[float] = 0.02  # for twisting the knob
+    gripper_closed_threshold: ClassVar[float] = 0.03  # threshold for gripper closed
 
     @classmethod
     def get_env_names(cls) -> Set[str]:
@@ -48,6 +52,9 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         # End effector facing forward (e.g., toward the knobs.)
         fwd_quat = euler2quat((-np.pi / 2, 0.0, -np.pi / 2))
         angled_quat = euler2quat((-3 * np.pi / 4, 0.0, -np.pi / 2))
+
+        slide_pick_quat = euler2quat((-3 * np.pi / 4, 0.0, -np.pi))
+        pick_up_quat = euler2quat((-np.pi, 0.0, -np.pi))
         prepullhinge_quat = euler2quat((-np.pi / 2, -np.pi / 8, -np.pi / 2))
 
         # Types
@@ -110,28 +117,33 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                     (target_pose, target_quat),
                 ]
                 print(f"MoveToPreTurnOn waypoints: {memory['waypoints']}")
-            else:
+            elif obj.name == "microhandle":
+                target_quat = angled_quat
                 memory["waypoints"] = [
-                    # (current_pose, current_quat),
+                    ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
                     (cls.home_pos, init_quat),
                     (target_pose, target_quat),
                 ]
-            # Moves away from handle to prevent collision.
-            # Changed to use the tolerance for the microhandle
-            if obj.name == "microhandle":
-                memory["waypoints"] = [
-                    ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat)
-                ] + memory["waypoints"]
                 print(f"Moves away from handle to prevent collision.")
-            if obj.name == "slide":
-                memory["waypoints"] = [(
-                    (gx, gy - 0.15, gz), down_quat)] + memory["waypoints"]
+            elif obj.name == "slide":
+                target_quat = angled_quat
+                memory["waypoints"] = [
+                    ((gx, gy - 0.10, gz), current_quat),
+                    ((gx, gy - 0.15, gz), down_quat),
+                    ((0.2, 0.5, 2.1), init_quat),
+                    (target_pose, target_quat),
+                    ]
+                print(f"MoveTo slide waypoints: {memory['waypoints']}")
             return True
 
         def _MoveTo_policy(state: State, memory: Dict,
                            objects: Sequence[Object], params: Array) -> Action:
             del params  # unused
-            gripper = objects[0]
+            if len(objects) == 3:
+                gripper, obj, obj_place = objects[0], objects[1], objects[2]
+            else:
+                gripper, obj = objects[0], objects[1]
+                obj_place = None
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
             gz = state.get(gripper, "z")
@@ -139,15 +151,28 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             gqx = state.get(gripper, "qx")
             gqy = state.get(gripper, "qy")
             gqz = state.get(gripper, "qz")
+            ox = state.get(obj, "x")
+            oy = state.get(obj, "y")
+            oz = state.get(obj, "z")
+            if obj_place is not None:
+                obj_place_x = KitchenEnv.obj_name_to_xyz[obj_place.name][0]
+                obj_place_y = KitchenEnv.obj_name_to_xyz[obj_place.name][1]
+                obj_place_z = KitchenEnv.obj_name_to_xyz[obj_place.name][2]
+
             current_euler = quat2euler([gqw, gqx, gqy, gqz])
             way_pos, way_quat = memory["waypoints"][0]
-            if np.allclose((gx, gy, gz), way_pos, atol=cls.moveto_tol):
+            # print(f"MoveTo waypoints: {way_pos}, {way_quat}")
+            # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
+            distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(way_pos))
+            distance_obj = np.linalg.norm(np.array([gx, gy, gz]) - np.array([ox, oy, oz]))
+            print(f"\rCurrent position: ({gx:.4f}, {gy:.4f}, {gz:.4f}) | Waypoint position: {way_pos} | Distance: {distance:.4f} | Distance to object: {distance_obj:.4f}", end="", flush=True)
+            if np.allclose((gx, gy, gz), way_pos, atol=cls.moveto_tol if len(objects) == 2 else 0.035):
                 memory["waypoints"].pop(0)
                 way_pos, way_quat = memory["waypoints"][0]
             dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
             target_euler = quat2euler(way_quat)
             droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
-            arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
+            arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0 if len(objects) == 2 else 1.0],
                            dtype=np.float32)
             action_mag = np.linalg.norm(arr)
             if action_mag > cls.max_delta_mag:
@@ -159,7 +184,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                              objects: Sequence[Object], params: Array) -> bool:
             del params  # unused
             # Change the tolerance for different objects
-            gripper, obj = objects
+            gripper, obj = objects[0], objects[1]
             if obj.name == "microhandle":
                 tol = 0.04
             elif obj.name == "hinge2":
@@ -586,74 +611,6 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                              params: Array) -> Action:
             # The parameter is an angular target offset in [0, π/2].
             push_angle = params[0]
-
-            # if objects[1].name == "hinge2":
-            #     # Hinge door arc opening along xy-plane, CCW from π to 3π/2.
-            #     # Fixed hinge parameters (provided by user).
-            #     hinge_center_x = -0.224
-            #     hinge_center_y = 0.71
-            #     # hinge_center_x = -0.2
-            #     # hinge_center_y = 0.6
-            #     # arc_radius = 0.39
-            #     arc_radius = 1
-            #     step_scale_factor = 0.5
-
-            #     # Current gripper pose
-            #     gripper = objects[0]
-            #     gx = state.get(gripper, "x")
-            #     gy = state.get(gripper, "y")
-
-            #     # Vector from hinge center to gripper and current angle θ
-            #     rx = gx - hinge_center_x
-            #     ry = gy - hinge_center_y
-            #     r_norm = np.hypot(rx, ry)
-            #     if r_norm < 1e-6:
-            #         # Degenerate case: nudge outward along -x to avoid NaN
-            #         rx, ry = -arc_radius, 0.0
-            #         r_norm = arc_radius
-
-            #     theta = np.arctan2(ry, rx)
-            #     # print(f"gx, gy: {gx}, {gy}")
-            #     # print(f"hinge_center_x, hinge_center_y: {hinge_center_x}, {hinge_center_y}")
-            #     # print(f"rx, ry: {rx}, {ry}")
-            #     # print(f"theta: {theta}")
-
-            #     gz = state.get(gripper, "z")
-            #     print(f"gz: {gz}")
-
-            #     # Target absolute angle on the arc: arc_angle ∈ [π, 3π/2]
-            #     # push_angle ∈ [0, π/2]
-            #     arc_angle_target = np.pi + push_angle
-
-            #     # Desired CCW angular increment
-            #     dtheta_needed = arc_angle_target - theta
-            #     # Ensure CCW-only progress: if already past target, no rotation
-            #     if dtheta_needed < 0.0:
-            #         dtheta_needed = 0.0
-
-            #     # Bound per-step angular progress by max linear step over radius
-            #     max_dtheta = (cls.max_push_mag * step_scale_factor) / max(arc_radius, 1e-6)
-            #     dtheta = min(dtheta_needed, max_dtheta)
-
-            #     # Tangential unit vector at current θ for CCW motion
-            #     tan_x = -np.sin(theta)
-            #     tan_y = np.cos(theta)
-
-            #     # Linear displacement along tangent: s = r * dθ
-            #     step_mag = arc_radius * dtheta * step_scale_factor
-            #     dx = tan_x * step_mag
-            #     dy = tan_y * step_mag
-            #     dz = 0.0
-
-            #     # Map angular step to end-effector z-rotation, bounded
-            #     # Scale dθ relative to the full arc (π/2) into [0, max_delta_mag]
-            #     rot_z = (dtheta / (np.pi / 2)) * cls.max_delta_mag
-            #     rot_z = np.clip(rot_z, -cls.max_delta_mag, cls.max_delta_mag)
-
-            #     arr = np.array([dx, dy, dz, 0.0, 0.0, rot_z, -1.0],
-            #                    dtype=np.float32)
-            # else:
-            # Other objects
             gripper = objects[0]
             # gz = state.get(gripper, "z")
             # print(f"gz: {gz}")
@@ -730,15 +687,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
             gz = state.get(gripper, "z")
-            cx = state.get(container, "x")
-            cy = state.get(container, "y")
-            cz = state.get(container, "z")
-            dx, dy, dz = params
             current_pose = (gx, gy, gz)
-            target_pose = (cx + dx, cy + dy, cz + dz)
             memory["waypoints"] = [
                 (current_pose, down_quat),
-                (target_pose, down_quat),
+                (cls.home_pos, down_quat),
             ]
             return True
 
@@ -765,10 +717,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                                           objects: Sequence[Object], params: Array) -> bool:
             del params  # unused
             gripper, obj = objects
-            if obj.name == "hinge1":
-                tol = 0.1
-            else:
-                tol = cls.moveto_tol
+            tol = cls.moveto_tol
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
             gz = state.get(gripper, "z")
@@ -780,45 +729,368 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             "MoveToObservePosition",
             types=[gripper_type, hinge_door_type],
             params_space=Box(-5, 5, (3, )),
-            policy=_MoveTo_policy,
-            initiable=_MoveTo_initiable,
-            terminal=_MoveTo_terminal)
+            policy=_MoveToObservePosition_policy,
+            initiable=_MoveToObservePosition_initiable,
+            terminal=_MoveToObservePosition_terminal)
         options.add(MoveToObservePosition)
 
         # ObserveContainer
         def _ObserveContainer_policy(state: State, memory: Dict,
                                    objects: Sequence[Object], params: Array) -> Action:
-            del state, memory, objects, params  # unused
+            del state, objects, params  # unused
             # Placeholder: Just return no-op action for testing
             arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
             return Action(arr)
 
         def _ObserveContainer_terminal(state: State, memory: Dict,
                                      objects: Sequence[Object], params: Array) -> bool:
+            """ObserveContainer option's terminal function.
+            
+            Determine whether banana is found based on actual situation, and set the corresponding state variable.
+            If not found, BananaFound predicate will return False, triggering replan.
+            """
             del memory, params  # unused
-            # Placeholder: Always terminate immediately for testing
+            container = objects[1]
+            container_name = container.name
+            
+            # Get banana object (if banana is in objects, use it; otherwise get it from environment)
+            from predicators.envs.kitchen import KitchenEnv
+            if len(objects) >= 3:
+                banana = objects[2]
+            else:
+                banana = KitchenEnv.object_name_to_object("banana")
+            
+            # Check if banana is really found (directly call _ContainsBanana_holds method)
+            # This method will check if banana is in container (consider nearest container and detection threshold)
+            found_banana = KitchenEnv._ContainsBanana_holds(state, [objects[0], container])
+            
+            # Update observed status
+            KitchenEnv.set_container_observed(container_name, True)
+            state.set(container, "observed", True)
+            
+            # Key: set banana.found status based on actual situation
+            # Also update environment level status and state variable
+            banana_name = banana.name if hasattr(banana, 'name') else "banana"
+            KitchenEnv.set_banana_found(banana_name, found_banana)
+            state.set(banana, "found", found_banana)
+            
+            print(f"ObserveContainer terminal: {container_name} observed = True, found_banana = {found_banana}")
             return True
 
-        # ObserveContainerAndFindBanana option
-        ObserveContainerAndFindBanana = ParameterizedOption(
-            "ObserveContainerAndFindBanana",
+        # ObserveContainerAndFindBanana option - COMMENTED OUT
+        # This option required ContainsBanana precondition, which meant planner needed to know banana location
+        # Replaced by unified ObserveContainer option that allows planner to observe any container
+        # ObserveContainerAndFindBanana = ParameterizedOption(
+        #     "ObserveContainerAndFindBanana",
+        #     types=[gripper_type, hinge_door_type, banana_type],
+        #     params_space=Box(-1, 1, (1, )),
+        #     policy=_ObserveContainer_policy,
+        #     initiable=lambda _1, _2, _3, _4: True,
+        #     terminal=_ObserveContainer_terminal)
+        # options.add(ObserveContainerAndFindBanana)
+
+        # ObserveContainerAndNotFindBanana option - COMMENTED OUT
+        # This option required NotContainsBanana precondition, which meant planner needed to know banana location
+        # Replaced by unified ObserveContainer option that allows planner to observe any container
+        # ObserveContainerAndNotFindBanana = ParameterizedOption(
+        #     "ObserveContainerAndNotFindBanana",
+        #     types=[gripper_type, hinge_door_type],
+        #     params_space=Box(-1, 1, (1, )),
+        #     policy=_ObserveContainer_policy,
+        #     initiable=lambda _1, _2, _3, _4: True,
+        #     terminal=_ObserveContainer_terminal)
+        # options.add(ObserveContainerAndNotFindBanana)
+
+        # ObserveContainer option - unified observe option, requires banana parameter
+        ObserveContainer = ParameterizedOption(
+            "ObserveContainer",
             types=[gripper_type, hinge_door_type, banana_type],
             params_space=Box(-1, 1, (1, )),
             policy=_ObserveContainer_policy,
             initiable=lambda _1, _2, _3, _4: True,
             terminal=_ObserveContainer_terminal)
-        options.add(ObserveContainerAndFindBanana)
+        options.add(ObserveContainer)
 
-        # ObserveContainerAndNotFindBanana option
-        ObserveContainerAndNotFindBanana = ParameterizedOption(
-            "ObserveContainerAndNotFindBanana",
-            types=[gripper_type, hinge_door_type],
-            params_space=Box(-1, 1, (1, )),
-            policy=_ObserveContainer_policy,
+        # MoveToPrePickUp
+
+        def _MoveToPrePickUp_initiable(state: State, memory: Dict,
+                                       objects: Sequence[Object],
+                                       params: Array) -> bool:
+            gripper, obj, obj_place = objects
+            gx = state.get(gripper, "x")
+            gy = state.get(gripper, "y")
+            gz = state.get(gripper, "z")
+            gqw = state.get(gripper, "qw")
+            gqx = state.get(gripper, "qx")
+            gqy = state.get(gripper, "qy")
+            gqz = state.get(gripper, "qz")
+            ox = state.get(obj, "x")
+            oy = state.get(obj, "y")
+            oz = state.get(obj, "z")
+            obj_place_x = KitchenEnv.obj_name_to_xyz[obj_place.name][0]
+            obj_place_y = KitchenEnv.obj_name_to_xyz[obj_place.name][1]
+            obj_place_z = KitchenEnv.obj_name_to_xyz[obj_place.name][2]
+            dx, dy, dz = params
+            current_pose = (gx, gy, gz)
+            target_pose = (ox + dx, oy + dy, oz + dz)
+            current_quat = (gqw, gqx, gqy, gqz)
+
+            init_quat = current_quat
+            if obj.is_instance(banana_type):
+                if obj_place.name == "hinge2":
+                    target_quat = angled_quat
+                
+                    memory["waypoints"] = [
+                        (cls.home_pos, down_quat),
+                        ((obj_place_x, obj_place_y - 0.4, obj_place_z), fwd_quat),
+                        ((obj_place_x, obj_place_y, obj_place_z), fwd_quat),
+                        ((obj_place_x + dx - 0.1, obj_place_y + dy - 0.1, obj_place_z + dz), fwd_quat),
+                        ((ox + dx, oy + dy, oz + dz), target_quat),
+                        (target_pose, target_quat),
+                    ]
+                
+                if obj_place.name == "slide":
+                    target_quat = slide_pick_quat
+                    memory["waypoints"] = [
+                        (cls.home_pos, down_quat),
+                        # ((obj_place_x + dx, obj_place_y + dy, obj_place_z + dz), target_quat),
+                        ((obj_place_x + dx + 0.05, obj_place_y + dy, obj_place_z + dz), target_quat),
+                        # ((ox + dx, oy + dy, oz + dz), target_quat),
+                        (target_pose, target_quat),
+                    ]
+
+                if obj_place.is_instance(surface_type):
+                    target_quat = angled_quat
+
+                    memory["waypoints"] = [
+                        (current_pose, init_quat),
+                        ((ox + dx, oy + dy, oz + dz), target_quat),
+                        (target_pose, target_quat),
+                    ]
+            print(f"MoveToPrePickUp waypoints: {memory['waypoints']}")
+            return True
+
+        def _MoveToPrePickUp_terminal(state: State, memory: Dict,
+                                      objects: Sequence[Object], params: Array) -> bool:
+            del params  # unused
+            # Change the tolerance for different objects
+            gripper, obj, obj_place = objects
+            gx = state.get(gripper, "x")
+            gy = state.get(gripper, "y")
+            gz = state.get(gripper, "z")
+            ox = state.get(obj, "x")
+            oy = state.get(obj, "y")
+            oz = state.get(obj, "z")
+            
+            
+            tol = 0.1
+            gx = state.get(gripper, "x")
+            gy = state.get(gripper, "y")
+            gz = state.get(gripper, "z")
+
+            distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array([ox, oy, oz]))
+            
+            # print(f"MoveToPreTurnOn Debug Info:")
+            # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
+            # print(f"Target position: ({waypoint_pos[0]:.4f}, {waypoint_pos[1]:.4f}, {waypoint_pos[2]:.4f})")
+            # print(f"Distance: {distance:.4f}")
+            # print(f"Tolerance: {tol}")
+            # print(f"Is reached: {np.allclose((gx, gy, gz), target_pos, atol=cls.moveto_tol)}")
+
+            return np.allclose((gx, gy, gz),
+                               (ox, oy, oz),
+                               atol=tol)
+
+        MoveToPrePickUp = ParameterizedOption(
+            "MoveToPrePickUp",
+            types=[gripper_type, banana_type, hinge_door_type],
+            params_space=Box(-5, 5, (3, )),
+            policy=_MoveTo_policy,
+            initiable=_MoveToPrePickUp_initiable,
+            terminal=_MoveToPrePickUp_terminal)
+        options.add(MoveToPrePickUp)
+
+        # Pick
+        def _Pick_policy(state: State, memory: Dict,
+                 objects: Sequence[Object], params: Array) -> Action:
+            del params  # unused
+            gripper, obj, obj_place = objects
+            
+
+            gx = state.get(gripper, "x")
+            gy = state.get(gripper, "y")
+            gz = state.get(gripper, "z")
+            ox = state.get(obj, "x")
+            oy = state.get(obj, "y")
+            oz = state.get(obj, "z")
+
+            gqw = state.get(gripper, "qw")
+            gqx = state.get(gripper, "qx")
+            gqy = state.get(gripper, "qy")
+            gqz = state.get(gripper, "qz")
+
+            current_euler = quat2euler([gqw, gqx, gqy, gqz])
+            target_quat = pick_up_quat
+            target_euler = quat2euler(target_quat)
+            droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+            print(f"droll: {droll}, dpitch: {dpitch}, dyaw: {dyaw}")
+
+            finger1_pos = state.get(gripper, "finger1_pos")
+            finger2_pos = state.get(gripper, "finger2_pos")
+            print(f"finger1_pos: {finger1_pos}, finger2_pos: {finger2_pos}")
+            
+            dx = 0.0
+            dy = -0.1
+            dz = (oz - gz) * 0.1 
+            
+
+            if abs(dz) > cls.max_push_mag:
+                dz = np.sign(dz) * cls.max_push_mag
+
+            if abs(dy) > cls.max_push_mag:
+                dy = np.sign(dy) * cls.max_push_mag
+            
+
+            arr = np.array([0.0, dy, 0.0, droll, dpitch, dyaw, -1.0], dtype=np.float32)
+
+            action_mag = np.linalg.norm(arr)
+            if action_mag > cls.max_delta_mag:
+                scale = cls.max_delta_mag / action_mag
+                arr = arr * scale
+
+            return Action(arr)
+
+        def _Pick_terminal(state: State, memory: Dict,
+                         objects: Sequence[Object], params: Array) -> bool:
+            del memory, params  # unused
+            gripper, obj, obj_place = objects
+
+            finger1_pos = state.get(gripper, "finger1_pos")
+            finger2_pos = state.get(gripper, "finger2_pos")
+            # print(f"finger1_pos: {finger1_pos}, finger2_pos: {finger2_pos}")
+            
+
+            is_closed = (finger1_pos < cls.gripper_closed_threshold and 
+                        finger2_pos < cls.gripper_closed_threshold)
+
+            return is_closed
+
+        Pick = ParameterizedOption(
+            "Pick",
+            types=[gripper_type, banana_type, hinge_door_type],
+            params_space=Box(-5, 5, (3, )),
+            policy=_Pick_policy,
             initiable=lambda _1, _2, _3, _4: True,
-            terminal=_ObserveContainer_terminal)
-        options.add(ObserveContainerAndNotFindBanana)
+            terminal=_Pick_terminal)
+        options.add(Pick)
+            
 
+        # MoveToTarget
+        def _MoveToTarget_initiable(state: State, memory: Dict,
+                                   objects: Sequence[Object], params: Array) -> bool:
+            gripper, obj, current_obj_place, target = objects
+            gx = state.get(gripper, "x")
+            gy = state.get(gripper, "y")
+            gz = state.get(gripper, "z")
+            gqw = state.get(gripper, "qw")
+            gqx = state.get(gripper, "qx")
+            gqy = state.get(gripper, "qy")
+            gqz = state.get(gripper, "qz")
+            tx = state.get(target, "x")
+            ty = state.get(target, "y")
+            tz = state.get(target, "z")
+            dx, dy, dz = params
+            current_pose = (gx, gy, gz)
+            target_pose = (tx, ty, tz)
+            current_quat = (gqw, gqx, gqy, gqz)
+            # Turn the knobs by pushing from a "forward" position.
+            init_quat = angled_quat
+            if obj.is_instance(banana_type):
+                target_quat = angled_quat
+            else:
+                init_quat = down_quat
+                target_quat = down_quat
+            # Change the waypoints to the target position
+            # memory["waypoints"] = [
+            #     (cls.home_pos, init_quat),
+            #     (target_pose, target_quat),
+            # ]
+            if current_obj_place.name == "hinge2":
+                target_quat = prepullhinge_quat
+                memory["waypoints"] = [
+                    (current_pose, init_quat),
+                    ((gx + dx, gy + dy, gz + dz), init_quat),
+                    ((tx, ty, tz + 0.1), target_quat),
+                ]
+                print(f"MoveToTarget waypoints: {memory['waypoints']}")
+            else:
+                memory["waypoints"] = [
+                    # (current_pose, current_quat),
+                    (cls.home_pos, init_quat),
+                    (target_pose, target_quat),
+                ]
+            return True
+
+
+        def _MoveToTarget_terminal(state: State, memory: Dict,
+                                   objects: Sequence[Object], params: Array) -> bool:
+            del memory, params  # unused
+            gripper, obj, current_obj_place, target = objects
+            gx = state.get(gripper, "x")
+            gy = state.get(gripper, "y")
+            gz = state.get(gripper, "z")
+
+            waypoint_pos = memory["waypoints"][0][0]
+            distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(waypoint_pos))
+
+            return np.allclose((gx, gy, gz),
+                               memory["waypoints"][-1][0],
+                               atol=cls.moveto_tol)
+
+        MoveToTarget = ParameterizedOption(
+            "MoveToTarget",
+            types=[gripper_type, banana_type, hinge_door_type],
+            params_space=Box(-5, 5, (3, )),
+            policy=_MoveTo_policy,
+            initiable=_MoveToTarget_initiable,
+            terminal=_MoveToTarget_terminal)
+        options.add(MoveToTarget)
+
+        # Place
+        def _Place_policy(state: State, memory: Dict,
+                         objects: Sequence[Object], params: Array) -> Action:
+            del state, memory, params  # unused
+            gripper, obj, obj_place = objects
+            finger1_pos = state.get(gripper, "finger1_pos")
+            finger2_pos = state.get(gripper, "finger2_pos")
+            # print(f"finger1_pos: {finger1_pos}, finger2_pos: {finger2_pos}")
+            arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            return Action(arr)
+
+        def _Place_terminal(state: State, memory: Dict,
+                         objects: Sequence[Object], params: Array) -> bool:
+            del memory, params  # unused
+            gripper, obj, obj_place = objects
+
+            finger1_pos = state.get(gripper, "finger1_pos")
+            finger2_pos = state.get(gripper, "finger2_pos")
+            # print(f"finger1_pos: {finger1_pos}, finger2_pos: {finger2_pos}")
+            
+
+            
+            is_open = (finger1_pos > cls.gripper_closed_threshold and 
+                        finger2_pos > cls.gripper_closed_threshold)
+
+            return is_open
+
+        Place = ParameterizedOption(
+            "Place",
+            types=[gripper_type, banana_type, hinge_door_type],
+            params_space=Box(-5, 5, (3, )),
+            policy=_Place_policy,
+            initiable=lambda _1, _2, _3, _4: True,
+            terminal=_Place_terminal)
+        options.add(Place)
         # OpenContainer
         # def _OpenContainer_policy(state: State, memory: Dict,
         #                         objects: Sequence[Object], params: Array) -> Action:

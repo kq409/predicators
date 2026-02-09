@@ -1,0 +1,10 @@
+# Region probabilities
+# Plan number: 2
+# Format: region_name probability
+
+microwave: 0.122222
+right_hinge_cabinet: 0.344444
+slide_cabinet: 0.444444
+tabletop: 0.088889
+
+# Total probability: 1.000000

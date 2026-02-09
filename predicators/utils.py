@@ -1359,6 +1359,29 @@ def nsrt_plan_to_greedy_option_policy(
 
     def _option_policy(state: State) -> _Option:
         nonlocal cur_nsrt
+        # First check if the goal has been achieved
+
+        if all(atom.holds(state) for atom in goal):
+            # Goal achieved, return a dummy option that terminates immediately
+            # Create a temporary option that initiable returns True and terminal returns True
+            from predicators.structs import ParameterizedOption, Action
+            from gym.spaces import Box
+            import numpy as np
+
+            print("Goal achieved, returning a dummy option that terminates immediately")
+            
+            # Create a dummy option that terminates immediately
+            goal_achieved_option = ParameterizedOption(
+                "GoalAchieved",
+                [],
+                Box(0, 1, (1,)),
+                lambda s, m, o, p: Action(np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)),
+                lambda s, m, o, p: True,  # initiable returns True
+                lambda s, m, o, p: True   # terminal returns True, terminates immediately
+            ).ground([], np.array([0.0]))
+            
+            return goal_achieved_option
+
         if not nsrt_queue:
             raise OptionExecutionFailure("NSRT plan exhausted.")
         expected_atoms = necessary_atoms_queue.pop(0)

@@ -162,8 +162,10 @@ def _sesame_plan_with_astar(
                 for _ in range(
                         CFG.refinement_estimation_num_skeletons_generated):
                     try:
+                        print("Generating skeleton")
                         proposed_skeletons.append(next(gen))
                     except _MaxSkeletonsFailure:
+                        print("Max skeletons failure")
                         break
                 gen = iter(
                     sorted(proposed_skeletons,
