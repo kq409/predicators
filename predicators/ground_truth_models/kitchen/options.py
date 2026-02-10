@@ -66,6 +66,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         knob_type = types["knob"]
         hinge_door_type = types["hinge_door"]
         banana_type = types["banana"]
+        mug_type = types["mug"]
 
         # Predicates
         OnTop = predicates["OnTop"]
@@ -746,65 +747,46 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                                      objects: Sequence[Object], params: Array) -> bool:
             """ObserveContainer option's terminal function.
             
-            Determine whether banana is found based on actual situation, and set the corresponding state variable.
-            If not found, BananaFound predicate will return False, triggering replan.
+            Determine whether a certain object is found based on actual situation, and set the corresponding state variable.
+            If not found, the corresponding predicate will return False, triggering replan.
             """
             del memory, params  # unused
             container = objects[1]
             container_name = container.name
             
-            # Get banana object (if banana is in objects, use it; otherwise get it from environment)
+            # Get object (if object is in objects, use it; otherwise get it from environment)
             from predicators.envs.kitchen import KitchenEnv
             if len(objects) >= 3:
                 banana = objects[2]
+                mug = objects[3]
             else:
                 banana = KitchenEnv.object_name_to_object("banana")
+                mug = KitchenEnv.object_name_to_object("mug")
             
-            # Check if banana is really found (directly call _ContainsBanana_holds method)
-            # This method will check if banana is in container (consider nearest container and detection threshold)
+            # Check if object is really found (directly call _ContainsBanana_holds method)
+            # This method will check if object is in container (consider nearest container and detection threshold)
             found_banana = KitchenEnv._ContainsBanana_holds(state, [objects[0], container])
-            
+            found_mug = KitchenEnv._ContainsMug_holds(state, [objects[0], container])
             # Update observed status
             KitchenEnv.set_container_observed(container_name, True)
             state.set(container, "observed", True)
             
-            # Key: set banana.found status based on actual situation
+            # Key: set object.found status based on actual situation
             # Also update environment level status and state variable
             banana_name = banana.name if hasattr(banana, 'name') else "banana"
             KitchenEnv.set_banana_found(banana_name, found_banana)
+            mug_name = mug.name if hasattr(mug, 'name') else "mug"
+            KitchenEnv.set_mug_found(mug_name, found_mug)
             state.set(banana, "found", found_banana)
+            state.set(mug, "found", found_mug)
             
-            print(f"ObserveContainer terminal: {container_name} observed = True, found_banana = {found_banana}")
+            print(f"ObserveContainer terminal: {container_name} observed = True, found_banana = {found_banana}, found_mug = {found_mug}")
             return True
-
-        # ObserveContainerAndFindBanana option - COMMENTED OUT
-        # This option required ContainsBanana precondition, which meant planner needed to know banana location
-        # Replaced by unified ObserveContainer option that allows planner to observe any container
-        # ObserveContainerAndFindBanana = ParameterizedOption(
-        #     "ObserveContainerAndFindBanana",
-        #     types=[gripper_type, hinge_door_type, banana_type],
-        #     params_space=Box(-1, 1, (1, )),
-        #     policy=_ObserveContainer_policy,
-        #     initiable=lambda _1, _2, _3, _4: True,
-        #     terminal=_ObserveContainer_terminal)
-        # options.add(ObserveContainerAndFindBanana)
-
-        # ObserveContainerAndNotFindBanana option - COMMENTED OUT
-        # This option required NotContainsBanana precondition, which meant planner needed to know banana location
-        # Replaced by unified ObserveContainer option that allows planner to observe any container
-        # ObserveContainerAndNotFindBanana = ParameterizedOption(
-        #     "ObserveContainerAndNotFindBanana",
-        #     types=[gripper_type, hinge_door_type],
-        #     params_space=Box(-1, 1, (1, )),
-        #     policy=_ObserveContainer_policy,
-        #     initiable=lambda _1, _2, _3, _4: True,
-        #     terminal=_ObserveContainer_terminal)
-        # options.add(ObserveContainerAndNotFindBanana)
 
         # ObserveContainer option - unified observe option, requires banana parameter
         ObserveContainer = ParameterizedOption(
             "ObserveContainer",
-            types=[gripper_type, hinge_door_type, banana_type],
+            types=[gripper_type, hinge_door_type, banana_type, mug_type],
             params_space=Box(-1, 1, (1, )),
             policy=_ObserveContainer_policy,
             initiable=lambda _1, _2, _3, _4: True,

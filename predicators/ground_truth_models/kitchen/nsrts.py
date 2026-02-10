@@ -32,6 +32,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         knob_type = types["knob"]
         hinge_door_type = types["hinge_door"]
         banana_type = types["banana"]
+        mug_type = types["mug"]
         object_type = types["object"]
         # Objects
         gripper = Variable("?gripper", gripper_type)
@@ -44,6 +45,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         hinge_door = Variable("?hinge_door", hinge_door_type)
         container = Variable("?container", hinge_door_type)  # Use hinge_door_type instead
         banana = Variable("?banana", banana_type)
+        mug = Variable("?mug", mug_type)
         obj_place = Variable("?obj_place", object_type)
 
         # Options
@@ -67,10 +69,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         MoveToTarget = options["MoveToTarget"]
         Place = options["Place"]
 
-        # ObserveContainerAndFindBanana and ObserveContainerAndNotFindBanana are commented out
-        # They are replaced by a unified ObserveContainer NSRT that doesn't require ContainsBanana precondition
-        # ObserveContainerAndFindBanana = options["ObserveContainerAndFindBanana"]
-        # ObserveContainerAndNotFindBanana = options["ObserveContainerAndNotFindBanana"]
+        
         ObserveContainer = options["ObserveContainer"]
 
 
@@ -96,6 +95,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         NotContainsBanana = predicates["NotContainsBanana"]
         # BananaIn = predicates["BananaIn"]  # Removed - not needed
         BananaFound = predicates["BananaFound"]
+        MugFound = predicates["MugFound"]
         # BananaVisible = predicates["BananaVisible"]  # Removed - not needed
         CanObserve = predicates["CanObserve"]
         # NeedsToOpen = predicates["NeedsToOpen"]  # Removed - not needed
@@ -654,21 +654,19 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                                    option, option_vars,
                                    moveto_observe_sampler)
 
-        # ObserveContainer - unified observe NSRT, always assume banana can be found during planning
-        # But actually decide whether banana is found based on actual situation during execution
-        parameters = [gripper, container, banana]
+        # ObserveContainer - unified observe NSRT, always assume every object can be found during planning
+        # But actually decide whether a certain object is found based on actual situation during execution
+        parameters = [gripper, container, banana, mug]
         preconditions = {
             LiftedAtom(AtPreObserve, [gripper, container]),
             LiftedAtom(Open, [container]),
             LiftedAtom(CanObserve, [container]),
             LiftedAtom(NotObserved, [container])
-            # Remove ContainsBanana/NotContainsBanana precondition
-            # Allow planner to execute observe on any container
         }
         # Assume always find banana during planning (optimistic planning)
-        # But actually decide whether banana is found based on actual situation during execution
         add_effects = {
             LiftedAtom(BananaFound, [banana]),
+            LiftedAtom(MugFound, [mug]),
             LiftedAtom(Observed, [container])
         }
         delete_effects = {LiftedAtom(NotObserved, [container])}
@@ -676,7 +674,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
         }
         option = ObserveContainer
-        option_vars = [gripper, container, banana]
+        option_vars = [gripper, container, banana, mug]
 
         def observe_container_sampler(state: State, goal: Set[GroundAtom],
                                     rng: np.random.Generator,
@@ -689,71 +687,6 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                                      delete_effects, ignore_effects,
                                      option, option_vars,
                                      observe_container_sampler)
-
-        # ObserveContainerAndFindBanana - COMMENTED OUT
-        # This NSRT required ContainsBanana precondition, which meant planner needed to know banana location
-        # Replaced by unified ObserveContainer NSRT that allows planner to observe any container
-        # parameters = [gripper, container, banana]
-        # preconditions = {
-        #     LiftedAtom(AtPreObserve, [gripper, container]),
-        #     LiftedAtom(Open, [container]),
-        #     LiftedAtom(ContainsBanana, [gripper, container]),
-        #     LiftedAtom(NotObserved, [container])
-        # }
-        # add_effects = {
-        #     LiftedAtom(BananaFound, [banana]),
-        #     LiftedAtom(Observed, [container])
-        # }
-        # delete_effects = {LiftedAtom(NotObserved, [container])}
-        # ignore_effects = {
-        #     AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
-        # }
-        # option = ObserveContainerAndFindBanana
-        # option_vars = [gripper, container, banana]
-        #
-        # def observe_container_sampler(state: State, goal: Set[GroundAtom],
-        #                             rng: np.random.Generator,
-        #                             objs: Sequence[Object]) -> Array:
-        #     del state, goal, rng, objs  # unused
-        #     return np.array([0.0], dtype=np.float32)
-        #
-        # observe_container_find_banana_nsrt = NSRT("ObserveContainerAndFindBanana", parameters,
-        #                              preconditions, add_effects,
-        #                              delete_effects, ignore_effects,
-        #                              option, option_vars,
-        #                              observe_container_sampler)
-
-        # ObserveContainerAndNotFindBanana - COMMENTED OUT
-        # This NSRT required NotContainsBanana precondition, which meant planner needed to know banana location
-        # Replaced by unified ObserveContainer NSRT that allows planner to observe any container
-        # parameters = [gripper, container]
-        # preconditions = {
-        #     LiftedAtom(AtPreObserve, [gripper, container]),
-        #     LiftedAtom(Open, [container]),
-        #     LiftedAtom(NotObserved, [container]),
-        #     LiftedAtom(NotContainsBanana, [gripper, container])
-        # }
-        # add_effects = {
-        #     LiftedAtom(Observed, [container])
-        # }
-        # delete_effects = {LiftedAtom(NotObserved, [container])}
-        # ignore_effects = {
-        #     AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
-        # }
-        # option = ObserveContainerAndNotFindBanana
-        # option_vars = [gripper, container]
-        #
-        # def observe_container_not_find_banana_sampler(state: State, goal: Set[GroundAtom],
-        #                                             rng: np.random.Generator,
-        #                                             objs: Sequence[Object]) -> Array:
-        #     del state, goal, rng, objs  # unused
-        #     return np.array([0.0], dtype=np.float32)
-        #
-        # observe_container_not_find_banana_nsrt = NSRT("ObserveContainerAndNotFindBanana",
-        #                                             parameters, preconditions, add_effects,
-        #                                             delete_effects, ignore_effects,
-        #                                             option, option_vars,
-        #                                             observe_container_not_find_banana_sampler)
 
         # MoveToPrePickUp
         parameters = [gripper, banana, container]
@@ -951,9 +884,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         # Add new banana search NSRTs
         nsrts.add(move_to_observe_nsrt)
         nsrts.add(observe_container_nsrt)
-        # nsrts.add(observe_container_find_banana_nsrt)  # COMMENTED OUT - replaced by observe_container_nsrt
-        # nsrts.add(observe_container_not_find_banana_nsrt)  # COMMENTED OUT - replaced by observe_container_nsrt
-        # nsrts.add(open_container_nsrt)
+
         nsrts.add(move_to_pre_pick_up_nsrt)
         nsrts.add(pick_nsrt)
         nsrts.add(move_to_target_nsrt)

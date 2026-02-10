@@ -30,7 +30,7 @@ from predicators.structs import Action, EnvironmentTask, Image, Object, \
 _TRACKED_SITES = [
     "hinge_site1", "hinge_site2", "kettle_site", "microhandle_site",
     "knob1_site", "knob2_site", "knob3_site", "knob4_site", "light_site",
-    "slide_site", "banana_site", "EEF"  # Added banana_site
+    "slide_site", "banana_site", "mug_site", "milk_site", "sponge_site", "tea_site", "EEF"  # Added banana_site
 ]
 
 _TRACKED_SITE_TO_JOINT = {
@@ -71,7 +71,12 @@ class KitchenEnv(BaseEnv):
     switch_type = Type("switch", ["x", "y", "z", "angle"], parent=on_off_type)
     surface_type = Type("surface", ["x", "y", "z"], parent=object_type)
     kettle_type = Type("kettle", ["x", "y", "z"], parent=object_type)
-    banana_type = Type("banana", ["x", "y", "z", "found"], parent=object_type)
+    grippable_object_type = Type("grippable_object", ["x", "y", "z", "found", "grasped"], parent=object_type)
+    banana_type = Type("banana", ["x", "y", "z", "found", "grasped"], parent=grippable_object_type)
+    mug_type = Type("mug", ["x", "y", "z", "found", "grasped"], parent=grippable_object_type)
+    milk_type = Type("milk", ["x", "y", "z", "found", "grasped"], parent=grippable_object_type)
+    sponge_type = Type("sponge", ["x", "y", "z", "found", "grasped"], parent=grippable_object_type)
+    tea_type = Type("tea", ["x", "y", "z", "found", "grasped"], parent=grippable_object_type)
 
     obj_name_to_type = {
         "gripper": gripper_type,
@@ -90,13 +95,19 @@ class KitchenEnv(BaseEnv):
         "burner3": surface_type,
         "burner4": surface_type,
         "banana": banana_type,
+        "mug": mug_type,
+        "milk": milk_type,
+        "sponge": sponge_type,
+        "tea": tea_type,
     }
 
     # Class level dictionary to store container observed status
     _container_observed_status: Dict[str, bool] = {}
     
-    # Class level dictionary to store banana found status
-    _banana_found_status: Dict[str, bool] = {}
+    # Class level dictionary to store grippable object found status
+    _grippable_object_found_status: Dict[str, bool] = {}
+    # Class level dictionary to store grippable object grasped status
+    _grippable_object_grasped_status: Dict[str, bool] = {}
 
     at_pre_turn_atol = 0.1  # tolerance for AtPreTurnOn/Off
     ontop_atol = 0.18  # tolerance for OnTop
@@ -111,10 +122,11 @@ class KitchenEnv(BaseEnv):
     at_pre_pullontop_yz_atol = 0.04  # tolerance for AtPrePullOnTop
     at_pre_pushontop_x_atol = 1.0  # other tolerance for AtPrePushOnTop
     observe_tol = 0.15  # tolerance for observation position
-    banana_detection_thresh = 0.75  # threshold for banana detection
+    detection_thresh = 0.75  # threshold for detection
     at_pre_pick_up_tol = 0.1  # tolerance for AtPrePickUp
     pick_up_tol = 0.05  # tolerance for picking up banana
     gripper_closed_threshold = 0.05  # threshold for gripper closed
+    in_sink_tol = 0.3  # threshold for mug in sink
 
     obj_name_to_pre_push_dpos = {
         ("kettle", "on"): (-0.05, -0.2, 0.00),
@@ -174,11 +186,14 @@ README of that repo suggests!"
             if container_name not in self._container_observed_status:
                 self._container_observed_status[container_name] = False
         
-        # Initialize banana found status to False
-        banana_name = "banana"
-        if banana_name not in self._banana_found_status:
-            self._banana_found_status[banana_name] = False
-
+        # Initialize grippable object found and grasped status to False
+        grippable_objects = ["banana", "mug", "milk", "sponge", "tea"]
+        for object_name in grippable_objects:
+            if object_name not in self._grippable_object_found_status:
+                self._grippable_object_found_status[object_name] = False
+            if object_name not in self._grippable_object_grasped_status:
+                self._grippable_object_grasped_status[object_name] = False
+                
     def _generate_train_tasks(self) -> List[EnvironmentTask]:
         return self._get_tasks(num=CFG.num_train_tasks, train_or_test="train")
 
@@ -346,6 +361,7 @@ README of that repo suggests!"
         KnobAndBurnerLinked = self._pred_name_to_pred["KnobAndBurnerLinked"]
         BananaFound = self._pred_name_to_pred["BananaFound"]
         BananaOnTop = self._pred_name_to_pred["BananaOnTop"]
+        MugInSink = self._pred_name_to_pred["MugInSink"]
         goal_preds = set()
         if CFG.kitchen_goals in ["all", "kettle_only"]:
             goal_preds.add(OnTop)
@@ -361,6 +377,8 @@ README of that repo suggests!"
             goal_preds.add(BananaFound)
         if CFG.kitchen_goals in ["all", "take_out_banana"]:
             goal_preds.add(BananaOnTop)
+        if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
+            goal_preds.add(MugInSink)
         return goal_preds
 
     @classmethod
@@ -402,10 +420,12 @@ README of that repo suggests!"
             Predicate("ContainsBanana", [cls.gripper_type, cls.hinge_door_type], cls._ContainsBanana_holds),
             Predicate("NotContainsBanana", [cls.gripper_type, cls.hinge_door_type], cls._NotContainsBanana_holds),
             Predicate("BananaFound", [cls.banana_type], cls._BananaFound_holds),
-            # Predicate("BananaVisible", [cls.banana_type], cls._BananaVisible_holds),
+            Predicate("MugFound", [cls.mug_type], cls._MugFound_holds),
+            # Predicate("SpongeFound", [cls.sponge_type], cls._SpongeFound_holds),
             Predicate("CanObserve", [cls.hinge_door_type], cls._CanObserve_holds),
             Predicate("BananaOnTop", [cls.banana_type, cls.object_type], cls._BananaOnTop_holds),
             Predicate("BananaPickedUp", [cls.gripper_type, cls.banana_type], cls._BananaPickedUp_holds),
+            Predicate("MugInSink", [cls.mug_type], cls._MugInSink_holds),
         }
 
         return {p.name: p for p in preds}
@@ -415,7 +435,8 @@ README of that repo suggests!"
         return {
             self.gripper_type, self.object_type, self.on_off_type,
             self.knob_type, self.kettle_type, self.switch_type,
-            self.hinge_door_type, self.surface_type, self.banana_type
+            self.hinge_door_type, self.surface_type, self.banana_type,
+            self.mug_type, self.milk_type, self.sponge_type, self.tea_type,
         }
 
     @property
@@ -502,15 +523,17 @@ README of that repo suggests!"
                         "angle": angle,
                         "observed": observed  # Initialize as not observed
                     }
-                elif obj.is_instance(cls.banana_type):
+                elif obj.is_instance(cls.grippable_object_type):
                     # For banana, include found status
-                    banana_name = obj.name if hasattr(obj, 'name') else "banana"
-                    found = cls._banana_found_status.get(banana_name, False)
+                    object_name = obj.name if hasattr(obj, 'name') else "grippable_object"
+                    found = cls._grippable_object_found_status.get(object_name, False)
+                    grasped = cls._grippable_object_grasped_status.get(object_name, False)
                     state_dict[obj] = {
                         "x": val[0],
                         "y": val[1],
                         "z": val[2],
-                        "found": found  # Initialize found status
+                        "found": found,  # Initialize found status
+                        "grasped": grasped  # Initialize grasped status
                     }
                 else:
                     state_dict[obj] = {
@@ -519,7 +542,6 @@ README of that repo suggests!"
                         "z": val[2],
                         "angle": angle
                     }
-        
         # Ensure all containers are in state_dict with observed status
         containers = ["hinge1", "hinge2", "slide", "microhandle"]
         for container_name in containers:
@@ -558,12 +580,17 @@ README of that repo suggests!"
     @classmethod
     def set_banana_found(cls, banana_name: str = "banana", found: bool = True) -> None:
         """Set the found status of banana."""
-        cls._banana_found_status[banana_name] = found
+        cls._grippable_object_found_status[banana_name] = found
+
+    @classmethod
+    def set_mug_found(cls, mug_name: str = "mug", found: bool = True) -> None:
+        """Set the found status of mug."""
+        cls._grippable_object_found_status[mug_name] = found
 
     @classmethod
     def get_banana_found(cls, banana_name: str = "banana") -> bool:
         """Get the found status of banana."""
-        return cls._banana_found_status.get(banana_name, False)
+        return cls._grippable_object_found_status.get(banana_name, False)
 
     def goal_reached(self) -> bool:
         state = self.state_info_to_state(
@@ -577,6 +604,7 @@ README of that repo suggests!"
         knob3 = self.object_name_to_object("knob3")
         light = self.object_name_to_object("light")
         banana = self.object_name_to_object("banana")
+        mug = self.object_name_to_object("mug")
         goal_desc = self._current_task.goal_description
         kettle_on_burner4 = self._OnTop_holds(state, [kettle, burner4])
         kettle_on_burner3 = self._OnTop_holds(state, [kettle, burner3])
@@ -589,6 +617,7 @@ README of that repo suggests!"
                                                     [kettle, burner3, knob3])
         banana_found = self._BananaFound_holds(state, [banana])
         take_out_banana = self._BananaOnTop_holds(state, [banana, burner2])
+        mug_in_sink = self._MugInSink_holds(state, [mug])
 
         if goal_desc == ("Move the kettle to the back burner and turn it on; "
                          "also turn on the light"):
@@ -613,6 +642,8 @@ README of that repo suggests!"
             return banana_found
         if goal_desc == ("Take out the banana"):
             return take_out_banana
+        if goal_desc == ("Put the mug in the sink"):
+            return mug_in_sink
         raise NotImplementedError(f"Unrecognized goal: {goal_desc}")
 
     def _get_tasks(self, num: int,
@@ -620,7 +651,7 @@ README of that repo suggests!"
         tasks = []
 
         assert CFG.kitchen_goals in [
-            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana", "take_out_banana"
+            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana", "take_out_banana", "put_mug_in_sink"
         ]
         goal_descriptions: List[str] = []
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -648,6 +679,8 @@ README of that repo suggests!"
             goal_descriptions.append("Find the banana")
         if CFG.kitchen_goals in ["all", "take_out_banana"]:
             goal_descriptions.append("Take out the banana")
+        if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
+            goal_descriptions.append("Put the mug in the sink")
         if CFG.kitchen_goals == "all":
             desc = (
                 "Move the kettle to the back left burner and turn it on; also "
@@ -726,28 +759,59 @@ README of that repo suggests!"
         """Set up new objects."""
         rng = np.random.default_rng(seed)
         
-        # New objects position setting
+        # # New objects position setting
+        # if train_or_test == "train":
+        #     object_positions = [
+        #         [-0.45, 0.8, 2.4],
+        #         [0.075, 0.9, 2.45],
+        #         [-0.4, 0.9, 2.45],
+        #         [0.15, 1.0, 2.45],
+        #         [-0.3, 1.0, 2.45],
+        #     ]
+        # else:
+        #     object_positions = [
+        #         [-0.45, 0.8, 2.4],
+        #         [0.075, 0.9, 2.45],
+        #         [-0.4, 0.9, 2.45],
+        #         [0.15, 1.0, 2.45],
+        #         [-0.3, 1.0, 2.45],
+        #     ]
+
         if train_or_test == "train":
             object_positions = [
-                [0.0, 0.5, 1.6],
+                [-0.45, 0.8, 2.4],
+                [0.075, 0.9, 2.45],
+                [-0.4, 0.9, 2.45],
+                [0.15, 1.0, 2.45],
+                [-0.3, 1.0, 2.45],
             ]
         else:
             object_positions = [
-                # [-0.8, 0.7, 1.7], # Microwave
-                # [-0.45, 0.8, 2.4], # Upper right cabinet
-                [-0.025, 0.77, 2.4], # Upper slide door
-                # [-0.224, 0.71, 2.6], # Hinge2 center, for test only!
-                # [-0.2, 0.5, 2.0], # Lookat marker position
+                [-0.025, 0.77, 2.4],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
             ]
+            # object_positions = [
+            #     # [-0.8, 0.7, 1.7], # Microwave
+            #     # [-0.45, 0.8, 2.4], # Upper right cabinet
+            #     [-0.025, 0.77, 2.4], # Upper slide door
+            #     # [-0.224, 0.71, 2.6], # Hinge2 center, for test only!
+            #     # [-0.2, 0.5, 2.0], # Lookat marker position
+            # ]
         # quaternion = [0.70710678, 0.70710678, 0.0, 0.0]
         # quaternion = [0.0, 0.0, 0.0, 1.0]   # No rotation
         # quaternion = [0.70710678, 0.0, 0.70710678, 0.0] # 90 degree rotation around y axis
         # quaternion = [0.70710678, 0.0, 0.0, 0.70710678] # 90 degree rotation around z axis
         euler = (0.0, 0.0, 1 * np.pi / 64)
+        # euler = (0.0, 0.0, 0.0)
         quaternion = euler2quat(euler)
         # Set the position of each object
         for i, pos in enumerate(object_positions):
-            object_name = "banana" if i == 0 else f"banana_{i+1}"
+            objects = ["banana", "mug", "milk", "sponge", "tea"]
+            object_name = objects[i]
+
             
             # Add randomness
             if CFG.kitchen_randomize_init_state:
@@ -1046,7 +1110,7 @@ README of that repo suggests!"
             return False
         
         # If current container is the closest, check if it's within detection threshold
-        return closest_distance < cls.banana_detection_thresh
+        return closest_distance < cls.detection_thresh
 
     @classmethod
     def _NotContainsBanana_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -1054,24 +1118,79 @@ README of that repo suggests!"
         gripper, container = objects
         return not cls._ContainsBanana_holds(state, [gripper, container])
 
-    # @classmethod
-    # def _BananaIn_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-    #     """Check if banana is in specific container."""
-    #     banana, container = objects
-    #     # Check if banana position is within container bounds
-    #     banana_xyz = np.array([
-    #         state.get(banana, "x"),
-    #         state.get(banana, "y"),
-    #         state.get(banana, "z")
-    #     ])
-    #     container_xyz = np.array([
-    #         state.get(container, "x"),
-    #         state.get(container, "y"),
-    #         state.get(container, "z")
-    #     ])
-    #     # Simple distance check (would need more sophisticated bounds checking)
-    #     distance = np.linalg.norm(banana_xyz - container_xyz)
-    #     return distance < cls.banana_detection_thresh
+    @classmethod
+    def _ContainsMug_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if container contains mug."""
+        gripper, container = objects
+        mug = cls.object_name_to_object("mug")
+        
+        if cls._MugPickedUp_holds(state, [gripper, mug]):
+            return False
+        
+        # Get mug position
+        mug_xyz = np.array([
+            state.get(mug, "x"),
+            state.get(mug, "y"),
+            state.get(mug, "z")
+        ])
+        
+        # Get all container positions and calculate distances
+        all_containers = ["hinge1", "hinge2", "slide", "microhandle"]
+        container_distances = {}
+        
+        for container_name in all_containers:
+            container_obj = cls.object_name_to_object(container_name)
+            container_xyz = cls.obj_name_to_xyz[container_name]
+            distance = np.linalg.norm(mug_xyz - container_xyz)
+            container_distances[container_name] = distance
+        
+        # Find the closest container
+        closest_container = min(container_distances, key=container_distances.get)
+        closest_distance = container_distances[closest_container]
+        
+        # Check if current container is the closest one
+        if container.name != closest_container:
+            return False
+        
+        # If current container is the closest, check if it's within detection threshold
+        return closest_distance < cls.detection_thresh
+
+    @classmethod
+    def _NotContainsMug_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if container does not contain mug."""
+        gripper, container = objects
+        return not cls._ContainsMug_holds(state, [gripper, container])
+
+    @classmethod
+    def _MugFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if container contains mug."""
+        mug = objects[0]
+        
+        try:
+            found_in_state = state.get(mug, "found")
+            if found_in_state:
+                return True
+        except (ValueError, KeyError):
+            pass  # feature not exist, continue checking other way
+        
+        # Second check environment level status (set by set_mug_found)
+        mug_name = mug.name if hasattr(mug, 'name') else "mug"
+        if mug_name in cls._grippable_object_found_status:
+            found_status = cls._grippable_object_found_status[mug_name]
+            if found_status:
+                return True
+
+        # Backward compatibility: if state variable and environment status do not exist or are False, check real state
+        gripper = cls.object_name_to_object("gripper")
+        # Check if any container contains the mug AND has been observed
+        containers = ["hinge1", "hinge2", "slide", "microhandle"]
+        for container_name in containers:
+            container = cls.object_name_to_object(container_name)
+            contains_mug = cls._ContainsMug_holds(state, [gripper, container])
+            observed = cls._Observed_holds(state, [container])
+            if (contains_mug and observed):
+                return True
+        return False
 
     @classmethod
     def _BananaFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -1093,8 +1212,8 @@ README of that repo suggests!"
         
         # Second check environment level status (set by set_banana_found)
         banana_name = banana.name if hasattr(banana, 'name') else "banana"
-        if banana_name in cls._banana_found_status:
-            found_status = cls._banana_found_status[banana_name]
+        if banana_name in cls._grippable_object_found_status:
+            found_status = cls._grippable_object_found_status[banana_name]
             if found_status:
                 return True
         
@@ -1110,14 +1229,6 @@ README of that repo suggests!"
                 return True
         return False
 
-    @classmethod
-    def _BananaVisible_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        """Check if banana is visible (on countertop)."""
-        banana = objects[0]
-        # Check if banana is on a surface (not in container)
-        banana_z = state.get(banana, "z")
-        # Assume countertop height is around 1.6
-        return banana_z > 1.5
 
     # @classmethod
     # def _CanObserve_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -1192,18 +1303,25 @@ README of that repo suggests!"
     @classmethod
     def _BananaPickedUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if banana has been picked up."""
-        gripper, banana = objects
-        gripper_xyz = np.array([
-            state.get(gripper, "x"),
-            state.get(gripper, "y"),
-            state.get(gripper, "z")
+        return cls._grippable_object_grasped_status.get("banana", False)
+
+    @classmethod
+    def _MugPickedUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if mug has been picked up."""
+        return cls._grippable_object_grasped_status.get("mug", False)
+
+    @classmethod
+    def _MugInSink_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if mug is in the sink."""
+        mug = objects[0]
+        mug_xyz = np.array([
+            state.get(mug, "x"),
+            state.get(mug, "y"),
+            state.get(mug, "z")
         ])
-        banana_xyz = np.array([
-            state.get(banana, "x"),
-            state.get(banana, "y"),
-            state.get(banana, "z")
+        sink_xyz = np.array([
+            1.0,
+            0.5,
+            1.4
         ])
-        finger1_pos = state.get(gripper, "finger1_pos")
-        finger2_pos = state.get(gripper, "finger2_pos")
-        # print(f"finger1_pos: {finger1_pos}, finger2_pos: {finger2_pos}")
-        return np.allclose(gripper_xyz, banana_xyz, atol=cls.pick_up_tol) and finger1_pos > cls.gripper_closed_threshold and finger2_pos > cls.gripper_closed_threshold
+        return np.allclose(mug_xyz, sink_xyz, atol=cls.in_sink_tol)

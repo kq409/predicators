@@ -29,6 +29,8 @@ class KitchenPerceiver(BasePerceiver):
         banana = KitchenEnv.object_name_to_object("banana")
         BananaFound = pred_name_to_pred["BananaFound"]
         BananaOnTop = pred_name_to_pred["BananaOnTop"]
+        MugInSink = pred_name_to_pred["MugInSink"]
+        mug = KitchenEnv.object_name_to_object("mug")
         goal_desc = env_task.goal_description
         if goal_desc == (
                 "Move the kettle to the back left burner and turn it on; "
@@ -66,6 +68,8 @@ class KitchenPerceiver(BasePerceiver):
             goal = {
                 GroundAtom(BananaOnTop, [banana, burner2])
             }
+        elif goal_desc == "Put the mug in the sink":
+            goal = {GroundAtom(MugInSink, [mug])}
         else:
             raise NotImplementedError(f"Unrecognized goal: {goal_desc}")
         return Task(state, goal)
