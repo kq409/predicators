@@ -34,6 +34,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         banana_type = types["banana"]
         mug_type = types["mug"]
         object_type = types["object"]
+
         # Objects
         gripper = Variable("?gripper", gripper_type)
         on_off_obj = Variable("?on_off_obj", on_off_type)
@@ -46,7 +47,9 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         container = Variable("?container", hinge_door_type)  # Use hinge_door_type instead
         banana = Variable("?banana", banana_type)
         mug = Variable("?mug", mug_type)
-        obj_place = Variable("?obj_place", object_type)
+        origin = Variable("?origin", object_type)
+        destination = Variable("?destination", object_type)
+
 
         # Options
         MoveToPrePushOnTop = options["MoveToPrePushOnTop"]
@@ -101,7 +104,9 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         # NeedsToOpen = predicates["NeedsToOpen"]  # Removed - not needed
         AtPrePickUp = predicates["AtPrePickUp"]
         BananaPickedUp = predicates["BananaPickedUp"]
+        MugPickedUp = predicates["MugPickedUp"]
         BananaOnTop = predicates["BananaOnTop"]
+        MugInSink = predicates["MugInSink"]
 
         nsrts = set()
 
@@ -688,7 +693,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                                      option, option_vars,
                                      observe_container_sampler)
 
-        # MoveToPrePickUp
+        # MoveToPrePickUpBanana
         parameters = [gripper, banana, container]
         preconditions = {
             LiftedAtom(Open, [container]),
@@ -708,16 +713,16 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                                         rng: np.random.Generator,
                                         objs: Sequence[Object]) -> Array:
             del state, goal, rng  # unused
-            gripper, banana, container = objs
-            params = np.array(KitchenEnv.get_pre_pick_delta_pos((banana, container)),
+            gripper, object, container = objs
+            params = np.array(KitchenEnv.get_pre_pick_delta_pos((object, container)),
                               dtype=np.float32)
             return params
 
-        move_to_pre_pick_up_nsrt = NSRT("MoveToPrePickUp", parameters, preconditions,
+        move_to_pre_pick_up_banana_nsrt = NSRT("MoveToPrePickUpBanana", parameters, preconditions,
                                         add_effects, delete_effects, ignore_effects,
                                         option, option_vars, move_to_pre_pick_up_sampler)
 
-        # Pick
+        # PickBanana
         parameters = [gripper, banana, container]
         preconditions = {
             LiftedAtom(AtPrePickUp, [gripper, banana, container]),
@@ -742,54 +747,126 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             params = np.array([0.0, 0.0, 0.0], dtype=np.float32)
             return params
 
-        pick_nsrt = NSRT("Pick", parameters, preconditions,
+        pick_banana_nsrt = NSRT("PickBanana", parameters, preconditions,
                         add_effects, delete_effects, ignore_effects,
                         option, option_vars, pick_sampler)
 
-        # MoveToTarget
-        parameters = [gripper, banana, obj_place]
+        # MoveToPrePickUpMug
+        parameters = [gripper, mug, container]
         preconditions = {
-            LiftedAtom(BananaPickedUp, [gripper, banana]),
+            LiftedAtom(Open, [container]),
+            LiftedAtom(Observed, [container]),
+            LiftedAtom(MugFound, [mug]),
         }
-        # TODO: Need to add the TABLETOP case
-        add_effects = {LiftedAtom(AtPrePickUp, [gripper, banana, obj_place])}
+        add_effects = {LiftedAtom(AtPrePickUp, [gripper, mug, container])}
         delete_effects: Set[LiftedAtom] = set()
         ignore_effects = {
             AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
         }
+        option = MoveToPrePickUp
+        option_vars = [gripper, mug, container]
+
+        move_to_pre_pick_up_mug_nsrt = NSRT("MoveToPrePickUpMug", parameters, preconditions,
+                                            add_effects, delete_effects, ignore_effects,
+                                            option, option_vars, move_to_pre_pick_up_sampler)
+
+        # PickMug
+        parameters = [gripper, mug, container]
+        preconditions = {
+            LiftedAtom(AtPrePickUp, [gripper, mug, container]),
+            LiftedAtom(Open, [container]),
+            LiftedAtom(Observed, [container]),
+            LiftedAtom(MugFound, [mug]),
+        }
+        add_effects = {LiftedAtom(MugPickedUp, [gripper, mug])}
+        delete_effects: Set[LiftedAtom] = set()
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+        }
+        option = Pick
+        option_vars = [gripper, mug, container]
+        
+        def pick_mug_sampler(state: State, goal: Set[GroundAtom],
+                            rng: np.random.Generator,
+                            objs: Sequence[Object]) -> Array:
+            del state, goal, rng, objs  # unused
+            params = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+            return params
+
+        pick_mug_nsrt = NSRT("PickMug", parameters, preconditions,
+                            add_effects, delete_effects, ignore_effects,
+                            option, option_vars, pick_mug_sampler)
+
+        # MoveToTargetBanana
+        parameters = [gripper, banana, origin, destination]
+        preconditions = {
+            LiftedAtom(BananaPickedUp, [gripper, banana]),
+        }
+        # TODO: Need to add the TABLETOP case
+        add_effects = {LiftedAtom(AtPrePickUp, [gripper, banana, destination])}
+        delete_effects: {LiftedAtom(AtPrePickUp, [gripper, banana, origin])}
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+        }
         option = MoveToTarget
-        option_vars = [gripper, banana, obj_place]
+        option_vars = [gripper, banana, origin, destination]
 
         def move_to_target_sampler(state: State, goal: Set[GroundAtom],
                                   rng: np.random.Generator,
                                   objs: Sequence[Object]) -> Array:
             del state, goal, rng  # unused
-            gripper, banana, obj_place = objs
-            params = np.array(KitchenEnv.get_pre_pick_delta_pos([banana, obj_place]),
+            gripper, object, origin, destination = objs
+            params = np.array(KitchenEnv.get_pre_pick_delta_pos([object, destination]),
                             dtype=np.float32)
             return params
 
-        move_to_target_nsrt = NSRT("MoveToTarget", parameters, preconditions,
+        move_to_target_banana_nsrt = NSRT("MoveToTargetBanana", parameters, preconditions,
                                    add_effects, delete_effects, ignore_effects,
                                    option, option_vars, move_to_target_sampler)
 
-        # Place
-        parameters = [gripper, banana, obj_place]
+        # MoveToTargetMug
+        parameters = [gripper, mug, origin, destination]
         preconditions = {
-            LiftedAtom(AtPrePickUp, [gripper, banana, obj_place]),
+            LiftedAtom(MugPickedUp, [gripper, mug]),
+        }
+        add_effects = {LiftedAtom(AtPrePickUp, [gripper, mug, destination])}
+        delete_effects = {LiftedAtom(AtPrePickUp, [gripper, mug, origin])}
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+        }
+        option = MoveToTarget
+        option_vars = [gripper, mug, origin, destination]
+
+        def move_to_target_mug_sampler(state: State, goal: Set[GroundAtom],
+                                      rng: np.random.Generator,
+                                      objs: Sequence[Object]) -> Array:
+            del state, goal, rng  # unused
+            gripper, mug, origin, destination = objs
+            params = np.array(KitchenEnv.get_pre_pick_delta_pos([mug, destination]),
+                            dtype=np.float32)
+            return params
+
+        move_to_target_mug_nsrt = NSRT("MoveToTargetMug", parameters, preconditions,
+                                      add_effects, delete_effects, ignore_effects,
+                                      option, option_vars, move_to_target_mug_sampler)
+
+        # PlaceBanana
+        parameters = [gripper, banana, destination]
+        preconditions = {
+            LiftedAtom(AtPrePickUp, [gripper, banana, destination]),
             LiftedAtom(BananaPickedUp, [gripper, banana]),
             # LiftedAtom(Open, [obj_place]),
             # LiftedAtom(ContainsBanana, [obj_place]),
             # LiftedAtom(Observed, [obj_place]),
             # LiftedAtom(BananaFound, [banana])
         }
-        add_effects = {LiftedAtom(BananaOnTop, [banana, obj_place])}
+        add_effects = {LiftedAtom(BananaOnTop, [banana, destination])}
         delete_effects = {LiftedAtom(BananaPickedUp, [gripper, banana])}
         ignore_effects = {
             AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
         }
         option = Place
-        option_vars = [gripper, banana, obj_place]
+        option_vars = [gripper, banana, destination]
 
         def place_sampler(state: State, goal: Set[GroundAtom],
                           rng: np.random.Generator,
@@ -802,6 +879,24 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         place_nsrt = NSRT("Place", parameters, preconditions,
                           add_effects, delete_effects, ignore_effects,
                           option, option_vars, place_sampler)
+
+        # PlaceMugInSink
+        parameters = [gripper, mug, destination]
+        preconditions = {
+            LiftedAtom(AtPrePickUp, [gripper, mug, destination]),
+            LiftedAtom(MugPickedUp, [gripper, mug]),
+        }
+        add_effects = {LiftedAtom(MugInSink, [mug, destination])}
+        delete_effects = {LiftedAtom(MugPickedUp, [gripper, mug])}
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp
+        }
+        option = Place
+        option_vars = [gripper, mug, destination]
+
+        place_mug_in_sink_nsrt = NSRT("PlaceMugInSink", parameters, preconditions,
+                                      add_effects, delete_effects, ignore_effects,
+                                      option, option_vars, place_sampler)
 
         # OpenContainer
         # parameters = [gripper, container]
@@ -885,8 +980,12 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         nsrts.add(move_to_observe_nsrt)
         nsrts.add(observe_container_nsrt)
 
-        nsrts.add(move_to_pre_pick_up_nsrt)
-        nsrts.add(pick_nsrt)
-        nsrts.add(move_to_target_nsrt)
+        nsrts.add(move_to_pre_pick_up_banana_nsrt)
+        nsrts.add(pick_banana_nsrt)
+        nsrts.add(move_to_pre_pick_up_mug_nsrt)
+        nsrts.add(pick_mug_nsrt)
+        nsrts.add(move_to_target_banana_nsrt)
+        nsrts.add(move_to_target_mug_nsrt)
         nsrts.add(place_nsrt)
+        nsrts.add(place_mug_in_sink_nsrt)
         return nsrts

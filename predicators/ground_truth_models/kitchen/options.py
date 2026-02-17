@@ -67,7 +67,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         hinge_door_type = types["hinge_door"]
         banana_type = types["banana"]
         mug_type = types["mug"]
-
+        grippable_object_type = types["grippable_object"]
+        object_type = types["object"]
         # Predicates
         OnTop = predicates["OnTop"]
 
@@ -140,11 +141,15 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _MoveTo_policy(state: State, memory: Dict,
                            objects: Sequence[Object], params: Array) -> Action:
             del params  # unused
+            origin = None
+            destination = None
+            obj_place = None
             if len(objects) == 3:
                 gripper, obj, obj_place = objects[0], objects[1], objects[2]
+            elif len(objects) == 4:
+                gripper, obj, origin, destination = objects[0], objects[1], objects[2], objects[3]
             else:
                 gripper, obj = objects[0], objects[1]
-                obj_place = None
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
             gz = state.get(gripper, "z")
@@ -155,10 +160,14 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             ox = state.get(obj, "x")
             oy = state.get(obj, "y")
             oz = state.get(obj, "z")
-            if obj_place is not None:
-                obj_place_x = KitchenEnv.obj_name_to_xyz[obj_place.name][0]
-                obj_place_y = KitchenEnv.obj_name_to_xyz[obj_place.name][1]
-                obj_place_z = KitchenEnv.obj_name_to_xyz[obj_place.name][2]
+            if origin is not None:
+                origin_x = KitchenEnv.obj_name_to_xyz[origin.name][0]
+                origin_y = KitchenEnv.obj_name_to_xyz[origin.name][1]
+                origin_z = KitchenEnv.obj_name_to_xyz[origin.name][2]
+            if destination is not None:
+                destination_x = KitchenEnv.obj_name_to_xyz[destination.name][0]
+                destination_y = KitchenEnv.obj_name_to_xyz[destination.name][1]
+                destination_z = KitchenEnv.obj_name_to_xyz[destination.name][2]
 
             current_euler = quat2euler([gqw, gqx, gqy, gqz])
             way_pos, way_quat = memory["waypoints"][0]
@@ -166,14 +175,29 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
             distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(way_pos))
             distance_obj = np.linalg.norm(np.array([gx, gy, gz]) - np.array([ox, oy, oz]))
+
+            if len(objects) == 2:
+                tol = cls.moveto_tol
+            elif len(objects) == 3:
+                tol = 0.035
+            else:
+                tol = cls.moveto_tol
             print(f"\rCurrent position: ({gx:.4f}, {gy:.4f}, {gz:.4f}) | Waypoint position: {way_pos} | Distance: {distance:.4f} | Distance to object: {distance_obj:.4f}", end="", flush=True)
-            if np.allclose((gx, gy, gz), way_pos, atol=cls.moveto_tol if len(objects) == 2 else 0.035):
+            if np.allclose((gx, gy, gz), way_pos, atol=tol):
                 memory["waypoints"].pop(0)
                 way_pos, way_quat = memory["waypoints"][0]
             dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
             target_euler = quat2euler(way_quat)
             droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
-            arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0 if len(objects) == 2 else 1.0],
+
+
+            if len(objects) == 2:
+                grip = 0.0
+            elif len(objects) == 3:
+                grip = 1.0
+            else:
+                grip = 0.0
+            arr = np.array([dx, dy, dz, droll, dpitch, dyaw, grip],
                            dtype=np.float32)
             action_mag = np.linalg.norm(arr)
             if action_mag > cls.max_delta_mag:
@@ -849,6 +873,13 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                         ((ox + dx, oy + dy, oz + dz), target_quat),
                         (target_pose, target_quat),
                     ]
+            elif obj.is_instance(mug_type):
+                target_quat = angled_quat
+                memory["waypoints"] = [
+                    (current_pose, init_quat),
+                    ((ox + dx, oy + dy, oz + dz), target_quat),
+                    (target_pose, target_quat),
+                ]
             print(f"MoveToPrePickUp waypoints: {memory['waypoints']}")
             return True
 
@@ -865,12 +896,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             oz = state.get(obj, "z")
             
             
-            tol = 0.1
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-
-            distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array([ox, oy, oz]))
+            tol = 0.05
             
             # print(f"MoveToPreTurnOn Debug Info:")
             # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
@@ -880,12 +906,12 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             # print(f"Is reached: {np.allclose((gx, gy, gz), target_pos, atol=cls.moveto_tol)}")
 
             return np.allclose((gx, gy, gz),
-                               (ox, oy, oz),
+                               memory["waypoints"][-1][0],
                                atol=tol)
 
         MoveToPrePickUp = ParameterizedOption(
             "MoveToPrePickUp",
-            types=[gripper_type, banana_type, hinge_door_type],
+            types=[gripper_type, grippable_object_type, hinge_door_type],
             params_space=Box(-5, 5, (3, )),
             policy=_MoveTo_policy,
             initiable=_MoveToPrePickUp_initiable,
@@ -959,7 +985,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         Pick = ParameterizedOption(
             "Pick",
-            types=[gripper_type, banana_type, hinge_door_type],
+            types=[gripper_type, grippable_object_type, hinge_door_type],
             params_space=Box(-5, 5, (3, )),
             policy=_Pick_policy,
             initiable=lambda _1, _2, _3, _4: True,
@@ -970,7 +996,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         # MoveToTarget
         def _MoveToTarget_initiable(state: State, memory: Dict,
                                    objects: Sequence[Object], params: Array) -> bool:
-            gripper, obj, current_obj_place, target = objects
+            gripper, obj, origin, destination = objects
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
             gz = state.get(gripper, "z")
@@ -978,9 +1004,9 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             gqx = state.get(gripper, "qx")
             gqy = state.get(gripper, "qy")
             gqz = state.get(gripper, "qz")
-            tx = state.get(target, "x")
-            ty = state.get(target, "y")
-            tz = state.get(target, "z")
+            tx = state.get(destination, "x")
+            ty = state.get(destination, "y")
+            tz = state.get(destination, "z")
             dx, dy, dz = params
             current_pose = (gx, gy, gz)
             target_pose = (tx, ty, tz)
@@ -997,7 +1023,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             #     (cls.home_pos, init_quat),
             #     (target_pose, target_quat),
             # ]
-            if current_obj_place.name == "hinge2":
+            if destination.name == "hinge2":
                 target_quat = prepullhinge_quat
                 memory["waypoints"] = [
                     (current_pose, init_quat),
@@ -1017,10 +1043,13 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _MoveToTarget_terminal(state: State, memory: Dict,
                                    objects: Sequence[Object], params: Array) -> bool:
             del memory, params  # unused
-            gripper, obj, current_obj_place, target = objects
+            gripper, obj, origin, destination = objects
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
             gz = state.get(gripper, "z")
+            tx = state.get(destination, "x")
+            ty = state.get(destination, "y")
+            tz = state.get(destination, "z")
 
             waypoint_pos = memory["waypoints"][0][0]
             distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(waypoint_pos))
@@ -1031,7 +1060,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         MoveToTarget = ParameterizedOption(
             "MoveToTarget",
-            types=[gripper_type, banana_type, hinge_door_type],
+            types=[gripper_type, grippable_object_type, object_type, object_type],
             params_space=Box(-5, 5, (3, )),
             policy=_MoveTo_policy,
             initiable=_MoveToTarget_initiable,
@@ -1067,7 +1096,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         Place = ParameterizedOption(
             "Place",
-            types=[gripper_type, banana_type, hinge_door_type],
+            types=[gripper_type, grippable_object_type, hinge_door_type],
             params_space=Box(-5, 5, (3, )),
             policy=_Place_policy,
             initiable=lambda _1, _2, _3, _4: True,

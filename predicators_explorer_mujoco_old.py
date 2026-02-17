@@ -78,7 +78,7 @@ args = {
     "use_gui": True,
     "num_test_tasks": 1,
     "kitchen_use_perfect_samplers": True,
-    "kitchen_goals": "find_banana",
+    "kitchen_goals": "put_mug_in_sink",
     "pybullet_sim_steps_per_action": 20,
     "pybullet_camera_width": 1674,
     "pybullet_camera_height": 900,
