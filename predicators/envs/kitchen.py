@@ -111,6 +111,13 @@ class KitchenEnv(BaseEnv):
     _grippable_object_found_status: Dict[str, bool] = {}
     # Class level dictionary to store grippable object grasped status
     _grippable_object_grasped_status: Dict[str, bool] = {}
+    # Class level dictionary to store relative position of grasped object in gripper frame
+    # Format: {object_name: (pos_in_gripper_frame, quat_in_gripper_frame)}
+    _grasped_object_relative_pose: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    # Instance-level dictionary to store body IDs for grasped objects (for applying forces)
+    _grasped_object_body_ids: Dict[str, int] = {}
+    # Store original gravity to restore later
+    _original_gravity: Optional[np.ndarray] = None
 
     at_pre_turn_atol = 0.1  # tolerance for AtPreTurnOn/Off
     ontop_atol = 0.18  # tolerance for OnTop
@@ -157,9 +164,21 @@ class KitchenEnv(BaseEnv):
         ("banana", "slide"): (0.0, 0.05, 0.0),
         ("banana", "microhandle"): (0.0, -0.05, 0.05),
         ("mug", "hinge2"): (0.0, 0.0, 0.0),
-        ("mug", "slide"): (0.0, 0.0, 0.0),
+        ("mug", "slide"): (0.0, -0.1, 0.2),
         ("mug", "microhandle"): (0.0, 0.0, 0.0),
         ("mug", "sink"): (0.0, 0.0, 0.0),
+        ("sponge", "hinge2"): (0.0, 0.0, 0.0),
+        ("sponge", "slide"): (0.0, -0.1, 0.1),
+        ("sponge", "microhandle"): (0.0, 0.0, 0.0),
+        ("sponge", "sink"): (0.0, 0.0, 0.0),
+        ("tea", "hinge2"): (0.0, 0.0, 0.0),
+        ("tea", "slide"): (0.0, 0.0, 0.0),
+        ("tea", "microhandle"): (0.0, 0.0, 0.0),
+        ("tea", "sink"): (0.0, 0.0, 0.0),
+        ("milk", "hinge2"): (0.0, 0.0, 0.0),
+        ("milk", "slide"): (0.0, 0.0, 0.0),
+        ("milk", "microhandle"): (0.0, 0.0, 0.0),
+        ("milk", "sink"): (0.0, 0.0, 0.0),
     }
 
     obj_name_to_xyz = {
@@ -168,7 +187,7 @@ class KitchenEnv(BaseEnv):
         "slide": np.array([-0.108, 0.607, 2.6]),
         "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
         "countertop": np.array([0.0, 0.5, 1.626]),
-        "sink": np.array([1.3, 0.5, 1.3]),
+        "sink": np.array([0.4, 0.28, 1.9]),
     }
 
     def __init__(self, use_gui: bool = True) -> None:
@@ -201,6 +220,11 @@ README of that repo suggests!"
                 self._grippable_object_found_status[object_name] = False
             if object_name not in self._grippable_object_grasped_status:
                 self._grippable_object_grasped_status[object_name] = False
+        
+        # Initialize instance-level dictionary for body IDs
+        self._grasped_object_body_ids: Dict[str, int] = {}
+        # Store original gravity to restore later
+        self._original_gravity: Optional[np.ndarray] = None
                 
     def _generate_train_tasks(self) -> List[EnvironmentTask]:
         return self._get_tasks(num=CFG.num_train_tasks, train_or_test="train")
@@ -370,6 +394,7 @@ README of that repo suggests!"
         BananaFound = self._pred_name_to_pred["BananaFound"]
         BananaOnTop = self._pred_name_to_pred["BananaOnTop"]
         MugInSink = self._pred_name_to_pred["MugInSink"]
+        SpongeInSink = self._pred_name_to_pred["SpongeInSink"]
         goal_preds = set()
         if CFG.kitchen_goals in ["all", "kettle_only"]:
             goal_preds.add(OnTop)
@@ -387,6 +412,9 @@ README of that repo suggests!"
             goal_preds.add(BananaOnTop)
         if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
             goal_preds.add(MugInSink)
+        if CFG.kitchen_goals in ["all", "clean_mug"]:
+            goal_preds.add(MugInSink)
+            goal_preds.add(SpongeInSink)
         return goal_preds
 
     @classmethod
@@ -429,12 +457,18 @@ README of that repo suggests!"
             Predicate("NotContainsBanana", [cls.gripper_type, cls.hinge_door_type], cls._NotContainsBanana_holds),
             Predicate("BananaFound", [cls.banana_type], cls._BananaFound_holds),
             Predicate("MugFound", [cls.mug_type], cls._MugFound_holds),
-            # Predicate("SpongeFound", [cls.sponge_type], cls._SpongeFound_holds),
+            Predicate("SpongeFound", [cls.sponge_type], cls._SpongeFound_holds),
+            Predicate("ContainsSponge", [cls.gripper_type, cls.hinge_door_type], cls._ContainsSponge_holds),
+            Predicate("NotContainsSponge", [cls.gripper_type, cls.hinge_door_type], cls._NotContainsSponge_holds),
             Predicate("CanObserve", [cls.hinge_door_type], cls._CanObserve_holds),
             Predicate("BananaOnTop", [cls.banana_type, cls.object_type], cls._BananaOnTop_holds),
             Predicate("BananaPickedUp", [cls.gripper_type, cls.banana_type], cls._BananaPickedUp_holds),
             Predicate("MugPickedUp", [cls.gripper_type, cls.mug_type], cls._MugPickedUp_holds),
+            Predicate("SpongePickedUp", [cls.gripper_type, cls.sponge_type], cls._SpongePickedUp_holds),
             Predicate("MugInSink", [cls.mug_type, cls.object_type], cls._OnTop_holds),
+            Predicate("SpongeInSink", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
+            # TEMPORARY HARDCODE: Predicate to identify slide container
+            Predicate("IsSlide", [cls.hinge_door_type], cls._IsSlide_holds),
         }
 
         return {p.name: p for p in preds}
@@ -460,6 +494,11 @@ README of that repo suggests!"
 
     def reset(self, train_or_test: str, task_idx: int) -> Observation:
         """Resets the current state to the train or test task initial state."""
+        # Restore gravity if it was modified
+        if self._original_gravity is not None:
+            self._gym_env.model.opt.gravity[:] = self._original_gravity
+            self._original_gravity = None
+        
         self._current_task = self.get_task(train_or_test, task_idx)
         # We now need to reset the underlying gym environment to the correct
         # state.
@@ -475,7 +514,16 @@ README of that repo suggests!"
             "Try using --bilevel_plan_without_sim True")
 
     def step(self, action: Action) -> Observation:
+        # Before step: Set grasped objects to their target positions and zero velocities
+        # This prevents physics simulation from affecting them during step()
+        self._pre_step_update_grasped_objects()
+        
         self._gym_env.step(action.arr)
+        
+        # After step: Update positions of grasped objects again (kinematic attachment)
+        # This ensures they stay attached even if step() moved them
+        self._update_grasped_objects()
+        
         if self._using_gui:
             self._gym_env.render()
         self._current_observation = {
@@ -483,6 +531,157 @@ README of that repo suggests!"
             "obs_images": self.render()
         }
         return self._copy_observation(self._current_observation)
+    
+    def _pre_step_update_grasped_objects(self) -> None:
+        """Set grasped objects to target positions and disable gravity before step().
+        This prevents physics simulation from affecting them during step().
+        """
+        model = self._gym_env.model
+        data = self._gym_env.data
+        
+        # Store original gravity if not already stored
+        if self._original_gravity is None:
+            self._original_gravity = model.opt.gravity.copy()
+        
+        # Check if any objects are grasped
+        has_grasped_objects = any(
+            self._grippable_object_grasped_status.get(obj_name, False)
+            for obj_name in self._grasped_object_relative_pose.keys()
+        )
+        
+        # Disable gravity if any object is grasped, restore if none are grasped
+        if has_grasped_objects:
+            model.opt.gravity = [0.0, 0.0, -0.001]   # Disable gravity globally
+            # print(f"Gravity: {model.opt.gravity}")
+        else:
+            # Restore original gravity when no objects are grasped
+            if self._original_gravity is not None:
+                model.opt.gravity[:] = self._original_gravity
+        
+        if not self._grasped_object_relative_pose:
+            return
+        
+        # Get current gripper pose
+        state_info = self.get_object_centric_state_info()
+        gripper_pos = state_info["EEF"][:3]  # x, y, z
+        gripper_quat = state_info["EEF"][3:7]  # qw, qx, qy, qz
+        
+        # Update each grasped object BEFORE step
+        for obj_name, (rel_pos, rel_quat) in self._grasped_object_relative_pose.items():
+            if not self._grippable_object_grasped_status.get(obj_name, False):
+                continue
+            
+            # Get or cache body ID
+            if obj_name not in self._grasped_object_body_ids:
+                try:
+                    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, obj_name)
+                    self._grasped_object_body_ids[obj_name] = body_id
+                except Exception:
+                    continue
+            
+            # Transform relative position from gripper frame to world frame
+            R_gripper = self._quat_to_rot_matrix(gripper_quat)
+            obj_world_pos = gripper_pos + R_gripper @ rel_pos
+            
+            # For quaternion, multiply gripper quaternion with relative quaternion
+            obj_world_quat = self._quat_multiply(gripper_quat, rel_quat)
+            
+            # Set object position BEFORE step
+            try:
+                self.set_joint(obj_name, np.concatenate([obj_world_pos, obj_world_quat]))
+                # Set velocity to zero
+                self._set_object_velocity_zero(obj_name)
+            except Exception as e:
+                print(f"Warning: Failed to pre-update grasped object {obj_name} position: {e}")
+    
+    def _update_grasped_objects(self) -> None:
+        """Update positions of grasped objects to follow gripper after step().
+        This ensures objects stay attached even if step() moved them.
+        """
+        if not self._grasped_object_relative_pose:
+            return
+        
+        # Get current gripper pose
+        state_info = self.get_object_centric_state_info()
+        gripper_pos = state_info["EEF"][:3]  # x, y, z
+        gripper_quat = state_info["EEF"][3:7]  # qw, qx, qy, qz
+        
+        # Update each grasped object AFTER step
+        for obj_name, (rel_pos, rel_quat) in self._grasped_object_relative_pose.items():
+            if not self._grippable_object_grasped_status.get(obj_name, False):
+                continue
+            
+            # Transform relative position from gripper frame to world frame
+            # obj_world_pos = gripper_pos + R_gripper * rel_pos
+            R_gripper = self._quat_to_rot_matrix(gripper_quat)
+            obj_world_pos = gripper_pos + R_gripper @ rel_pos
+            
+            # For quaternion, multiply gripper quaternion with relative quaternion
+            # quat_multiply(gripper_quat, rel_quat) gives object quaternion in world frame
+            obj_world_quat = self._quat_multiply(gripper_quat, rel_quat)
+            
+            # Set object position using set_joint
+            try:
+                self.set_joint(obj_name, np.concatenate([obj_world_pos, obj_world_quat]))
+                # Set velocity to zero to prevent physics simulation
+                self._set_object_velocity_zero(obj_name)
+            except Exception as e:
+                print(f"Warning: Failed to update grasped object {obj_name} position: {e}")
+    
+    def _set_object_velocity_zero(self, obj_name: str) -> None:
+        """Set object velocity to zero to disable physics simulation."""
+        try:
+            model = self._gym_env.model
+            data = self._gym_env.data
+            
+            # Find the joint (freejoint) for this object
+            joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, obj_name)
+            if joint_id >= 0:
+                joint_type = model.jnt_type[joint_id]
+                if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+                    # Free joint has 6 DOF for velocity (3 linear + 3 angular)
+                    qvel_start = model.jnt_dofadr[joint_id]
+                    data.qvel[qvel_start:qvel_start + 6] = 0.0
+                    mujoco.mj_forward(model, data)
+        except Exception as e:
+            # Silently fail if object doesn't have a joint or other error
+            pass
+    
+    @staticmethod
+    def _quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+        """Multiply two quaternions: q1 * q2.
+        
+        Args:
+            q1: [qw, qx, qy, qz]
+            q2: [qw, qx, qy, qz]
+        
+        Returns:
+            [qw, qx, qy, qz]
+        """
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        return np.array([w, x, y, z])
+    
+    @staticmethod
+    def _quat_to_rot_matrix(q: np.ndarray) -> np.ndarray:
+        """Convert quaternion to rotation matrix.
+        
+        Args:
+            q: [qw, qx, qy, qz]
+        
+        Returns:
+            3x3 rotation matrix
+        """
+        w, x, y, z = q
+        return np.array([
+            [1 - 2*(y**2 + z**2), 2*(x*y - w*z), 2*(x*z + w*y)],
+            [2*(x*y + w*z), 1 - 2*(x**2 + z**2), 2*(y*z - w*x)],
+            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x**2 + y**2)]
+        ])
 
     @classmethod
     def state_info_to_state(cls, state_info: Dict[str, Any]) -> State:
@@ -609,9 +808,75 @@ README of that repo suggests!"
         cls._grippable_object_found_status[mug_name] = found
 
     @classmethod
+    def set_sponge_found(cls, sponge_name: str = "sponge", found: bool = True) -> None:
+        """Set the found status of sponge."""
+        cls._grippable_object_found_status[sponge_name] = found
+
+    @classmethod
     def get_banana_found(cls, banana_name: str = "banana") -> bool:
         """Get the found status of banana."""
         return cls._grippable_object_found_status.get(banana_name, False)
+    
+    @classmethod
+    def set_grippable_object_grasped(cls, obj_name: str, grasped: bool = True,
+                                     gripper_pos: Optional[np.ndarray] = None,
+                                     gripper_quat: Optional[np.ndarray] = None,
+                                     obj_pos: Optional[np.ndarray] = None,
+                                     obj_quat: Optional[np.ndarray] = None) -> None:
+        """Set the grasped status of a grippable object and record relative pose.
+        
+        Args:
+            obj_name: Name of the object
+            grasped: Whether the object is grasped
+            gripper_pos: Gripper position [x, y, z] (required if grasped=True)
+            gripper_quat: Gripper quaternion [qw, qx, qy, qz] (required if grasped=True)
+            obj_pos: Object position [x, y, z] (required if grasped=True)
+            obj_quat: Object quaternion [qw, qx, qy, qz] (required if grasped=True)
+        """
+        cls._grippable_object_grasped_status[obj_name] = grasped
+        
+        if grasped:
+            if gripper_pos is None or gripper_quat is None or obj_pos is None or obj_quat is None:
+                raise ValueError("gripper_pos, gripper_quat, obj_pos, and obj_quat must be provided when grasping")
+            
+            # Calculate relative position and orientation in gripper frame
+            rel_pos, rel_quat = cls._compute_relative_pose(
+                gripper_pos, gripper_quat, obj_pos, obj_quat)
+            cls._grasped_object_relative_pose[obj_name] = (rel_pos, rel_quat)
+        else:
+            # Clear relative pose when releasing
+            if obj_name in cls._grasped_object_relative_pose:
+                del cls._grasped_object_relative_pose[obj_name]
+    
+    @classmethod
+    def _compute_relative_pose(cls, gripper_pos: np.ndarray, gripper_quat: np.ndarray,
+                               obj_pos: np.ndarray, obj_quat: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute object pose relative to gripper frame.
+        
+        Args:
+            gripper_pos: [x, y, z]
+            gripper_quat: [qw, qx, qy, qz]
+            obj_pos: [x, y, z]
+            obj_quat: [qw, qx, qy, qz]
+        
+        Returns:
+            (rel_pos, rel_quat): Relative position [x, y, z] and quaternion [qw, qx, qy, qz] in gripper frame
+        """
+        # Compute relative position: transform obj_pos to gripper frame
+        # rel_pos = R_gripper^T * (obj_pos - gripper_pos)
+        # where R_gripper is rotation matrix from gripper quaternion
+        
+        R_gripper = cls._quat_to_rot_matrix(gripper_quat)
+        rel_pos_vec = obj_pos - gripper_pos
+        rel_pos = R_gripper.T @ rel_pos_vec
+        
+        # Compute relative quaternion: rel_quat = gripper_quat^-1 * obj_quat
+        # Quaternion inverse: [w, -x, -y, -z] for unit quaternion
+        gripper_quat_inv = np.array([gripper_quat[0], -gripper_quat[1], 
+                                     -gripper_quat[2], -gripper_quat[3]])
+        rel_quat = cls._quat_multiply(gripper_quat_inv, obj_quat)
+        
+        return rel_pos, rel_quat
 
     def goal_reached(self) -> bool:
         state = self.state_info_to_state(
@@ -626,6 +891,7 @@ README of that repo suggests!"
         light = self.object_name_to_object("light")
         banana = self.object_name_to_object("banana")
         mug = self.object_name_to_object("mug")
+        sponge = self.object_name_to_object("sponge")
         sink = self.object_name_to_object("sink")
         goal_desc = self._current_task.goal_description
         kettle_on_burner4 = self._OnTop_holds(state, [kettle, burner4])
@@ -640,6 +906,7 @@ README of that repo suggests!"
         banana_found = self._BananaFound_holds(state, [banana])
         take_out_banana = self._BananaOnTop_holds(state, [banana, burner2])
         mug_in_sink = self._OnTop_holds(state, [mug, sink])
+        sponge_in_sink = self._OnTop_holds(state, [sponge, sink])
 
         if goal_desc == ("Move the kettle to the back burner and turn it on; "
                          "also turn on the light"):
@@ -666,6 +933,8 @@ README of that repo suggests!"
             return take_out_banana
         if goal_desc == ("Put the mug in the sink"):
             return mug_in_sink
+        if goal_desc == ("CleanMug") or goal_desc == ("Clean the mug"):
+            return mug_in_sink and sponge_in_sink
         raise NotImplementedError(f"Unrecognized goal: {goal_desc}")
 
     def _get_tasks(self, num: int,
@@ -673,7 +942,7 @@ README of that repo suggests!"
         tasks = []
 
         assert CFG.kitchen_goals in [
-            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana", "take_out_banana", "put_mug_in_sink"
+            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana", "take_out_banana", "put_mug_in_sink", "clean_mug"
         ]
         goal_descriptions: List[str] = []
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -703,6 +972,8 @@ README of that repo suggests!"
             goal_descriptions.append("Take out the banana")
         if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
             goal_descriptions.append("Put the mug in the sink")
+        if CFG.kitchen_goals in ["all", "clean_mug"]:
+            goal_descriptions.append("CleanMug")
         if CFG.kitchen_goals == "all":
             desc = (
                 "Move the kettle to the back left burner and turn it on; also "
@@ -733,7 +1004,8 @@ README of that repo suggests!"
             # even more variation.
             kettle_y_coord = rng.uniform(0.4, 0.55)
         self._gym_env.set_body_position(  # type: ignore
-            "kettle", (kettle_x_coord, kettle_y_coord, 1.626))
+            # "kettle", (kettle_x_coord, kettle_y_coord, 1.626))
+            "kettle", (kettle_x_coord, kettle_y_coord, 0.0))
 
         self._setup_new_objects(seed, train_or_test)
         self.get_object_centric_state_info()
@@ -785,17 +1057,17 @@ README of that repo suggests!"
         if train_or_test == "train":
             object_positions = [
                 [-0.45, 0.8, 2.4],
-                [0.075, 0.85, 2.45],
+                [0.085, 0.8, 2.45],
                 [-0.4, 0.9, 2.45],
-                [0.15, 1.0, 2.45],
+                [-0.05, 0.8, 2.45],
                 [-0.45, 1.0, 2.45],
             ]
         else:
             object_positions = [
                 [-0.45, 0.8, 2.4],
-                [0.075, 0.85, 2.45],
+                [0.085, 0.8, 2.45],
                 [-0.4, 0.9, 2.45],
-                [0.15, 1.0, 2.45],
+                [-0.05, 0.8, 2.45],
                 [-0.45, 1.0, 2.45],
             ]
 
@@ -1164,6 +1436,17 @@ README of that repo suggests!"
         return not cls._ContainsMug_holds(state, [gripper, container])
 
     @classmethod
+    def _ContainsSponge_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if container contains sponge. Delegates to _ContainsObject_holds."""
+        return cls._ContainsObject_holds(state, objects, "sponge")
+
+    @classmethod
+    def _NotContainsSponge_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if container does not contain sponge."""
+        gripper, container = objects
+        return not cls._ContainsSponge_holds(state, [gripper, container])
+
+    @classmethod
     def _ObjectFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if object (banana or mug) has been found.
         
@@ -1200,6 +1483,8 @@ README of that repo suggests!"
                 contains_obj = cls._ContainsBanana_holds(state, [gripper, container])
             elif obj_name == "mug":
                 contains_obj = cls._ContainsMug_holds(state, [gripper, container])
+            elif obj_name == "sponge":
+                contains_obj = cls._ContainsSponge_holds(state, [gripper, container])
             else:
                 contains_obj = False
             
@@ -1209,13 +1494,61 @@ README of that repo suggests!"
 
     @classmethod
     def _MugFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        """Check if mug has been found. Delegates to _ObjectFound_holds."""
-        return cls._ObjectFound_holds(state, objects)
+        """Check if mug has been found. 
+        
+        TEMPORARY HARDCODE: Only allow mug to be found in slide container.
+        """
+        obj = objects[0]
+        obj_name = obj.name if hasattr(obj, 'name') else ""
+        
+        # TEMPORARY HARDCODE: Only check slide container for mug
+        gripper = cls.object_name_to_object("gripper")
+        slide_container = cls.object_name_to_object("slide")
+        
+        # First check state variable object.found (set by ObserveContainer option)
+        try:
+            found_in_state = state.get(obj, "found")
+            if found_in_state:
+                # Verify that slide container was observed (mug can only be found in slide)
+                slide_observed = cls._Observed_holds(state, [slide_container])
+                if slide_observed:
+                    return True
+        except (ValueError, KeyError):
+            pass
+        
+        # Second check environment level status
+        if obj_name in cls._grippable_object_found_status:
+            found_status = cls._grippable_object_found_status[obj_name]
+            if found_status:
+                # Verify that slide container was observed
+                slide_observed = cls._Observed_holds(state, [slide_container])
+                if slide_observed:
+                    return True
+        
+        # Backward compatibility: check if slide container contains mug AND has been observed
+        slide_observed = cls._Observed_holds(state, [slide_container])
+        contains_mug = cls._ContainsMug_holds(state, [gripper, slide_container])
+        
+        if contains_mug and slide_observed:
+            return True
+        
+        return False
 
     @classmethod
     def _BananaFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if banana has been found. Delegates to _ObjectFound_holds."""
         return cls._ObjectFound_holds(state, objects)
+
+    @classmethod
+    def _SpongeFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if sponge has been found. Delegates to _ObjectFound_holds."""
+        return cls._ObjectFound_holds(state, objects)
+
+    @classmethod
+    def _IsSlide_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """TEMPORARY HARDCODE: Check if container is slide."""
+        container = objects[0]
+        return container.name == "slide"
 
 
     # @classmethod
@@ -1297,4 +1630,9 @@ README of that repo suggests!"
     def _MugPickedUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if mug has been picked up."""
         return cls._grippable_object_grasped_status.get("mug", False)
+
+    @classmethod
+    def _SpongePickedUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if sponge has been picked up."""
+        return cls._grippable_object_grasped_status.get("sponge", False)
 

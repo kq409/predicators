@@ -30,7 +30,9 @@ class KitchenPerceiver(BasePerceiver):
         BananaFound = pred_name_to_pred["BananaFound"]
         BananaOnTop = pred_name_to_pred["BananaOnTop"]
         MugInSink = pred_name_to_pred["MugInSink"]
+        SpongeInSink = pred_name_to_pred["SpongeInSink"]
         mug = KitchenEnv.object_name_to_object("mug")
+        sponge = KitchenEnv.object_name_to_object("sponge")
         sink = KitchenEnv.object_name_to_object("sink")
         goal_desc = env_task.goal_description
         if goal_desc == (
@@ -71,6 +73,11 @@ class KitchenPerceiver(BasePerceiver):
             }
         elif goal_desc == "Put the mug in the sink":
             goal = {GroundAtom(MugInSink, [mug, sink])}
+        elif goal_desc == "CleanMug" or goal_desc == "Clean the mug":
+            goal = {
+                GroundAtom(MugInSink, [mug, sink]),
+                GroundAtom(SpongeInSink, [sponge, sink])
+            }
         else:
             raise NotImplementedError(f"Unrecognized goal: {goal_desc}")
         return Task(state, goal)

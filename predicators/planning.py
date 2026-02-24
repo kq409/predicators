@@ -1130,7 +1130,12 @@ def _sesame_plan_with_fast_downward(
     implemented here.
     """
     init_atoms = utils.abstract(task.init, predicates)
-    objects = list(task.init)
+    # Include objects from both init state and goal atoms
+    objects = set(task.init)
+    # Extract objects from goal atoms (e.g., sink object may only appear in goal)
+    for goal_atom in task.goal:
+        objects.update(goal_atom.objects)
+    objects = list(objects)
     timeout_cmd = "gtimeout" if sys.platform == "darwin" else "timeout"
     if optimal:
         alias_flag = "--alias seq-opt-lmcut"

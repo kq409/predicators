@@ -213,7 +213,12 @@ def _collect_refinement_data_for_task(env: BaseEnv, task: Task,
     """
     ground_nsrt_timeout = CFG.timeout
     init_atoms = utils.abstract(task.init, predicates)
-    objects = list(task.init)
+    # Include objects from both init state and goal atoms
+    objects = set(task.init)
+    # Extract objects from goal atoms (e.g., sink object may only appear in goal)
+    for goal_atom in task.goal:
+        objects.update(goal_atom.objects)
+    objects = list(objects)
     ground_nsrt_start_time = time.perf_counter()
     ground_nsrts = sesame_ground_nsrts(task, init_atoms, nsrts, objects,
                                        predicates, types,

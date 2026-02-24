@@ -27,6 +27,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
     moveto_tol: ClassVar[float] = 0.01  # for terminating moving
     max_delta_mag: ClassVar[float] = 1.0  # don't move more than this per step
+    min_delta_mag: ClassVar[float] = 0.4  # don't move less than this per step
     max_push_mag: ClassVar[float] = 0.05  # for pushing forward
     # A reasonable home position for the end effector.
     home_pos: ClassVar[Pose3D] = (0.0, 0.37, 2.1)
@@ -67,6 +68,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         hinge_door_type = types["hinge_door"]
         banana_type = types["banana"]
         mug_type = types["mug"]
+        sponge_type = types["sponge"]
         grippable_object_type = types["grippable_object"]
         object_type = types["object"]
         # Predicates
@@ -177,11 +179,12 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             distance_obj = np.linalg.norm(np.array([gx, gy, gz]) - np.array([ox, oy, oz]))
 
             if len(objects) == 2:
-                tol = cls.moveto_tol
+                # tol = cls.moveto_tol
+                tol = 0.0125
             elif len(objects) == 3:
                 tol = 0.035
             else:
-                tol = cls.moveto_tol
+                tol = 0.05
             print(f"\rCurrent position: ({gx:.4f}, {gy:.4f}, {gz:.4f}) | Waypoint position: {way_pos} | Distance: {distance:.4f} | Distance to object: {distance_obj:.4f}", end="", flush=True)
             if np.allclose((gx, gy, gz), way_pos, atol=tol):
                 memory["waypoints"].pop(0)
@@ -203,6 +206,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             if action_mag > cls.max_delta_mag:
                 scale = cls.max_delta_mag / action_mag
                 arr = arr * scale
+            print(f"Action magnitude: {np.linalg.norm(arr)}")
             return Action(arr)
 
         def _MoveTo_terminal(state: State, memory: Dict,
@@ -780,17 +784,20 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             
             # Get object (if object is in objects, use it; otherwise get it from environment)
             from predicators.envs.kitchen import KitchenEnv
-            if len(objects) >= 3:
+            if len(objects) >= 5:
                 banana = objects[2]
                 mug = objects[3]
+                sponge = objects[4]
             else:
                 banana = KitchenEnv.object_name_to_object("banana")
                 mug = KitchenEnv.object_name_to_object("mug")
+                sponge = KitchenEnv.object_name_to_object("sponge")
             
-            # Check if object is really found (directly call _ContainsBanana_holds method)
+            # Check if object is really found (directly call _Contains*_holds method)
             # This method will check if object is in container (consider nearest container and detection threshold)
             found_banana = KitchenEnv._ContainsBanana_holds(state, [objects[0], container])
             found_mug = KitchenEnv._ContainsMug_holds(state, [objects[0], container])
+            found_sponge = KitchenEnv._ContainsSponge_holds(state, [objects[0], container])
             # Update observed status
             KitchenEnv.set_container_observed(container_name, True)
             state.set(container, "observed", True)
@@ -801,19 +808,22 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             KitchenEnv.set_banana_found(banana_name, found_banana)
             mug_name = mug.name if hasattr(mug, 'name') else "mug"
             KitchenEnv.set_mug_found(mug_name, found_mug)
+            sponge_name = sponge.name if hasattr(sponge, 'name') else "sponge"
+            KitchenEnv.set_sponge_found(sponge_name, found_sponge)
             state.set(banana, "found", found_banana)
             state.set(mug, "found", found_mug)
+            state.set(sponge, "found", found_sponge)
             
-            print(f"ObserveContainer terminal: {container_name} observed = True, found_banana = {found_banana}, found_mug = {found_mug}")
+            print(f"ObserveContainer terminal: {container_name} observed = True, found_banana = {found_banana}, found_mug = {found_mug}, found_sponge = {found_sponge}")
             return True
 
-        # ObserveContainer option - unified observe option, requires banana parameter
+        # ObserveContainer option - unified observe option, requires banana, mug, and sponge parameters
         ObserveContainer = ParameterizedOption(
             "ObserveContainer",
-            types=[gripper_type, hinge_door_type, banana_type, mug_type],
+            types=[gripper_type, hinge_door_type, banana_type, mug_type, sponge_type],
             params_space=Box(-1, 1, (1, )),
             policy=_ObserveContainer_policy,
-            initiable=lambda _1, _2, _3, _4: True,
+            initiable=lambda _1, _2, _3, _4: True,  # Standard signature: (state, memory, objects, params)
             terminal=_ObserveContainer_terminal)
         options.add(ObserveContainer)
 
@@ -874,12 +884,25 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                         (target_pose, target_quat),
                     ]
             elif obj.is_instance(mug_type):
-                target_quat = angled_quat
-                memory["waypoints"] = [
-                    (current_pose, init_quat),
-                    ((ox + dx, oy + dy, oz + dz), target_quat),
-                    (target_pose, target_quat),
-                ]
+                if obj_place.name == "slide":
+                    target_quat = angled_quat
+                    memory["waypoints"] = [
+                        (cls.home_pos, angled_quat),
+                        ((ox + dx, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
+                        ((ox + dx, oy + dy, oz + dz), angled_quat),
+                        (target_pose, angled_quat),
+                    ]
+                    print(f"obj_place: {obj_place.name}, obj: {obj.name}")
+            elif obj.is_instance(sponge_type):
+                if obj_place.name == "slide":
+                    target_quat = angled_quat
+                    memory["waypoints"] = [
+                        (cls.home_pos, angled_quat),
+                        ((ox + dx, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
+                        ((ox + dx, oy + dy, oz + dz), angled_quat),
+                        (target_pose, angled_quat),
+                    ]
+                    print(f"obj_place: {obj_place.name}, obj: {obj.name}")
             print(f"MoveToPrePickUp waypoints: {memory['waypoints']}")
             return True
 
@@ -980,6 +1003,48 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
             is_closed = (finger1_pos < cls.gripper_closed_threshold and 
                         finger2_pos < cls.gripper_closed_threshold)
+            
+            # When gripper closes, record relative pose and disable physics for the object
+            if is_closed:
+                obj_name = obj.name
+                # Get current poses
+                gripper_pos = np.array([
+                    state.get(gripper, "x"),
+                    state.get(gripper, "y"),
+                    state.get(gripper, "z")
+                ])
+                gripper_quat = np.array([
+                    state.get(gripper, "qw"),
+                    state.get(gripper, "qx"),
+                    state.get(gripper, "qy"),
+                    state.get(gripper, "qz")
+                ])
+                obj_pos = np.array([
+                    state.get(obj, "x"),
+                    state.get(obj, "y"),
+                    state.get(obj, "z")
+                ])
+                # For grippable objects, we might not have quaternion in state
+                # Use default quaternion [1, 0, 0, 0] if not available
+                try:
+                    obj_quat = np.array([
+                        state.get(obj, "qw"),
+                        state.get(obj, "qx"),
+                        state.get(obj, "qy"),
+                        state.get(obj, "qz")
+                    ])
+                except (ValueError, KeyError):
+                    obj_quat = np.array([1.0, 0.0, 0.0, 0.0])  # Default: no rotation
+                
+                # Set grasped status and record relative pose
+                KitchenEnv.set_grippable_object_grasped(
+                    obj_name, grasped=True,
+                    gripper_pos=gripper_pos,
+                    gripper_quat=gripper_quat,
+                    obj_pos=obj_pos,
+                    obj_quat=obj_quat
+                )
+                print(f"Object {obj_name} grasped. Relative pose recorded.")
 
             return is_closed
 
@@ -1023,7 +1088,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             #     (cls.home_pos, init_quat),
             #     (target_pose, target_quat),
             # ]
-            if destination.name == "hinge2":
+            if origin.name == "hinge2":
                 target_quat = prepullhinge_quat
                 memory["waypoints"] = [
                     (current_pose, init_quat),
@@ -1031,18 +1096,38 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                     ((tx, ty, tz + 0.1), target_quat),
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
+            elif origin.name == "slide":
+                if destination.name == "sink":
+                    target_quat = angled_quat
+                    memory["waypoints"] = [
+                        ((gx, gy - 0.3, gz + 0.05), current_quat),
+                        (cls.home_pos, current_quat),
+                        ((tx, ty, tz + 0.1), current_quat),
+                        (target_pose, current_quat),
+                    ]
+                    print(f"MoveToTarget waypoints: {memory['waypoints']}")
+                else:
+                    # Default waypoints for slide origin with other destinations
+                    memory["waypoints"] = [
+                        (current_pose, init_quat),
+                        ((tx, ty, tz + 0.1), target_quat),
+                        (target_pose, target_quat),
+                    ]
+                    print(f"MoveToTarget waypoints (default): {memory['waypoints']}")
             else:
+                # Default waypoints for other origins
                 memory["waypoints"] = [
-                    # (current_pose, current_quat),
-                    (cls.home_pos, init_quat),
+                    (current_pose, init_quat),
+                    ((tx, ty, tz + 0.1), target_quat),
                     (target_pose, target_quat),
                 ]
+                print(f"MoveToTarget waypoints (default): {memory['waypoints']}")
             return True
 
 
         def _MoveToTarget_terminal(state: State, memory: Dict,
                                    objects: Sequence[Object], params: Array) -> bool:
-            del memory, params  # unused
+            del params  # unused
             gripper, obj, origin, destination = objects
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
@@ -1056,7 +1141,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
             return np.allclose((gx, gy, gz),
                                memory["waypoints"][-1][0],
-                               atol=cls.moveto_tol)
+                               atol=0.05)
 
         MoveToTarget = ParameterizedOption(
             "MoveToTarget",
@@ -1070,7 +1155,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         # Place
         def _Place_policy(state: State, memory: Dict,
                          objects: Sequence[Object], params: Array) -> Action:
-            del state, memory, params  # unused
+            del memory, params  # unused
             gripper, obj, obj_place = objects
             finger1_pos = state.get(gripper, "finger1_pos")
             finger2_pos = state.get(gripper, "finger2_pos")
@@ -1091,12 +1176,19 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             
             is_open = (finger1_pos > cls.gripper_closed_threshold and 
                         finger2_pos > cls.gripper_closed_threshold)
+            
+            # When gripper opens, release the object and restore physics
+            if is_open:
+                obj_name = obj.name
+                # Release the object (clear grasped status and relative pose)
+                KitchenEnv.set_grippable_object_grasped(obj_name, grasped=False)
+                print(f"Object {obj_name} released. Physics restored.")
 
             return is_open
 
         Place = ParameterizedOption(
             "Place",
-            types=[gripper_type, grippable_object_type, hinge_door_type],
+            types=[gripper_type, grippable_object_type, object_type],
             params_space=Box(-5, 5, (3, )),
             policy=_Place_policy,
             initiable=lambda _1, _2, _3, _4: True,

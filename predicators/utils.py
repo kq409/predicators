@@ -3178,10 +3178,7 @@ def _create_pyperplan_heuristic(
     pyperplan_heuristic_cls = _PYPERPLAN_HEURISTICS[heuristic_name]
     pyperplan_task = _create_pyperplan_task(init_atoms, goal, ground_ops,
                                             predicates, objects, static_atoms)
-    try:
-        pyperplan_heuristic = pyperplan_heuristic_cls(pyperplan_task)
-    except AssertionError as e:
-        raise
+    pyperplan_heuristic = pyperplan_heuristic_cls(pyperplan_task)
     pyperplan_goal = _atoms_to_pyperplan_facts(goal - static_atoms)
     return _PyperplanHeuristicWrapper(heuristic_name, init_atoms, goal,
                                       ground_ops, static_atoms,

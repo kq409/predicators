@@ -33,6 +33,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         hinge_door_type = types["hinge_door"]
         banana_type = types["banana"]
         mug_type = types["mug"]
+        sponge_type = types["sponge"]
         object_type = types["object"]
 
         # Objects
@@ -47,6 +48,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         container = Variable("?container", hinge_door_type)  # Use hinge_door_type instead
         banana = Variable("?banana", banana_type)
         mug = Variable("?mug", mug_type)
+        sponge = Variable("?sponge", sponge_type)
         origin = Variable("?origin", object_type)
         destination = Variable("?destination", object_type)
 
@@ -96,17 +98,23 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         NotObserved = predicates["NotObserved"]
         ContainsBanana = predicates["ContainsBanana"]
         NotContainsBanana = predicates["NotContainsBanana"]
+        IsSlide = predicates["IsSlide"]  # TEMPORARY HARDCODE: Predicate to identify slide
         # BananaIn = predicates["BananaIn"]  # Removed - not needed
         BananaFound = predicates["BananaFound"]
         MugFound = predicates["MugFound"]
+        SpongeFound = predicates["SpongeFound"]
+        ContainsSponge = predicates["ContainsSponge"]
+        NotContainsSponge = predicates["NotContainsSponge"]
         # BananaVisible = predicates["BananaVisible"]  # Removed - not needed
         CanObserve = predicates["CanObserve"]
         # NeedsToOpen = predicates["NeedsToOpen"]  # Removed - not needed
         AtPrePickUp = predicates["AtPrePickUp"]
         BananaPickedUp = predicates["BananaPickedUp"]
         MugPickedUp = predicates["MugPickedUp"]
+        SpongePickedUp = predicates["SpongePickedUp"]
         BananaOnTop = predicates["BananaOnTop"]
         MugInSink = predicates["MugInSink"]
+        SpongeInSink = predicates["SpongeInSink"]
 
         nsrts = set()
 
@@ -661,17 +669,19 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
 
         # ObserveContainer - unified observe NSRT, always assume every object can be found during planning
         # But actually decide whether a certain object is found based on actual situation during execution
-        parameters = [gripper, container, banana, mug]
+        # TEMPORARY HARDCODE: Removed MugFound from add_effects - mug can only be found in slide (see ObserveSlideForMug below)
+        parameters = [gripper, container, banana, mug, sponge]
         preconditions = {
             LiftedAtom(AtPreObserve, [gripper, container]),
             LiftedAtom(Open, [container]),
             LiftedAtom(CanObserve, [container]),
             LiftedAtom(NotObserved, [container])
         }
-        # Assume always find banana during planning (optimistic planning)
+        # Assume always find banana and sponge during planning (optimistic planning)
         add_effects = {
             LiftedAtom(BananaFound, [banana]),
-            LiftedAtom(MugFound, [mug]),
+            LiftedAtom(SpongeFound, [sponge]),
+            # TEMPORARY HARDCODE: Removed MugFound - mug can only be found in slide
             LiftedAtom(Observed, [container])
         }
         delete_effects = {LiftedAtom(NotObserved, [container])}
@@ -679,7 +689,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
         }
         option = ObserveContainer
-        option_vars = [gripper, container, banana, mug]
+        option_vars = [gripper, container, banana, mug, sponge]  # Updated to include sponge
 
         def observe_container_sampler(state: State, goal: Set[GroundAtom],
                                     rng: np.random.Generator,
@@ -692,6 +702,36 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                                      delete_effects, ignore_effects,
                                      option, option_vars,
                                      observe_container_sampler)
+
+        # ObserveSlideForMug - TEMPORARY HARDCODE: Only allow mug to be found in slide container
+        # This NSRT is identical to ObserveContainer but only adds MugFound when container is slide
+        # Use container variable (not fixed slide_container) but add IsSlide precondition to restrict grounding
+        parameters = [gripper, container, banana, mug, sponge]
+        preconditions = {
+            LiftedAtom(AtPreObserve, [gripper, container]),
+            LiftedAtom(Open, [container]),
+            LiftedAtom(CanObserve, [container]),
+            LiftedAtom(NotObserved, [container]),
+            LiftedAtom(IsSlide, [container])  # TEMPORARY HARDCODE: Only allow slide container
+        }
+        add_effects = {
+            LiftedAtom(BananaFound, [banana]),
+            LiftedAtom(SpongeFound, [sponge]),
+            LiftedAtom(MugFound, [mug]),  # Only add MugFound for slide container
+            LiftedAtom(Observed, [container])
+        }
+        delete_effects = {LiftedAtom(NotObserved, [container])}
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+        }
+        option = ObserveContainer
+        option_vars = [gripper, container, banana, mug, sponge]
+
+        observe_slide_for_mug_nsrt = NSRT("ObserveSlideForMug", parameters,
+                                         preconditions, add_effects,
+                                         delete_effects, ignore_effects,
+                                         option, option_vars,
+                                         observe_container_sampler)
 
         # MoveToPrePickUpBanana
         parameters = [gripper, banana, container]
@@ -801,6 +841,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         parameters = [gripper, banana, origin, destination]
         preconditions = {
             LiftedAtom(BananaPickedUp, [gripper, banana]),
+            LiftedAtom(AtPrePickUp, [gripper, banana, origin]),
         }
         # TODO: Need to add the TABLETOP case
         add_effects = {LiftedAtom(AtPrePickUp, [gripper, banana, destination])}
@@ -828,6 +869,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         parameters = [gripper, mug, origin, destination]
         preconditions = {
             LiftedAtom(MugPickedUp, [gripper, mug]),
+            LiftedAtom(AtPrePickUp, [gripper, mug, origin]),
         }
         add_effects = {LiftedAtom(AtPrePickUp, [gripper, mug, destination])}
         delete_effects = {LiftedAtom(AtPrePickUp, [gripper, mug, origin])}
@@ -849,6 +891,79 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         move_to_target_mug_nsrt = NSRT("MoveToTargetMug", parameters, preconditions,
                                       add_effects, delete_effects, ignore_effects,
                                       option, option_vars, move_to_target_mug_sampler)
+
+        # MoveToPrePickUpSponge
+        parameters = [gripper, sponge, container]
+        preconditions = {
+            LiftedAtom(Open, [container]),
+            LiftedAtom(Observed, [container]),
+            LiftedAtom(SpongeFound, [sponge]),
+        }
+        add_effects = {LiftedAtom(AtPrePickUp, [gripper, sponge, container])}
+        delete_effects: Set[LiftedAtom] = set()
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+        }
+        option = MoveToPrePickUp
+        option_vars = [gripper, sponge, container]
+
+        move_to_pre_pick_up_sponge_nsrt = NSRT("MoveToPrePickUpSponge", parameters, preconditions,
+                                               add_effects, delete_effects, ignore_effects,
+                                               option, option_vars, move_to_pre_pick_up_sampler)
+
+        # PickSponge
+        parameters = [gripper, sponge, container]
+        preconditions = {
+            LiftedAtom(AtPrePickUp, [gripper, sponge, container]),
+            LiftedAtom(Open, [container]),
+            LiftedAtom(Observed, [container]),
+            LiftedAtom(SpongeFound, [sponge]),
+        }
+        add_effects = {LiftedAtom(SpongePickedUp, [gripper, sponge])}
+        delete_effects: Set[LiftedAtom] = set()
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+        }
+        option = Pick
+        option_vars = [gripper, sponge, container]
+        
+        def pick_sponge_sampler(state: State, goal: Set[GroundAtom],
+                               rng: np.random.Generator,
+                               objs: Sequence[Object]) -> Array:
+            del state, goal, rng, objs  # unused
+            params = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+            return params
+
+        pick_sponge_nsrt = NSRT("PickSponge", parameters, preconditions,
+                                add_effects, delete_effects, ignore_effects,
+                                option, option_vars, pick_sponge_sampler)
+
+        # MoveToTargetSponge
+        parameters = [gripper, sponge, origin, destination]
+        preconditions = {
+            LiftedAtom(SpongePickedUp, [gripper, sponge]),
+            LiftedAtom(AtPrePickUp, [gripper, sponge, origin]),
+        }
+        add_effects = {LiftedAtom(AtPrePickUp, [gripper, sponge, destination])}
+        delete_effects = {LiftedAtom(AtPrePickUp, [gripper, sponge, origin])}
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+        }
+        option = MoveToTarget
+        option_vars = [gripper, sponge, origin, destination]
+
+        def move_to_target_sponge_sampler(state: State, goal: Set[GroundAtom],
+                                         rng: np.random.Generator,
+                                         objs: Sequence[Object]) -> Array:
+            del state, goal, rng  # unused
+            gripper, sponge, origin, destination = objs
+            params = np.array(KitchenEnv.get_pre_pick_delta_pos([sponge, destination]),
+                            dtype=np.float32)
+            return params
+
+        move_to_target_sponge_nsrt = NSRT("MoveToTargetSponge", parameters, preconditions,
+                                          add_effects, delete_effects, ignore_effects,
+                                          option, option_vars, move_to_target_sponge_sampler)
 
         # PlaceBanana
         parameters = [gripper, banana, destination]
@@ -872,7 +987,6 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                           rng: np.random.Generator,
                           objs: Sequence[Object]) -> Array:
             del state, goal, rng, objs  # unused
-            gripper, banana, obj_place = objs
             params = np.array([0.0, 0.0, 0.0], dtype=np.float32)
             return params
 
@@ -887,7 +1001,10 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             LiftedAtom(MugPickedUp, [gripper, mug]),
         }
         add_effects = {LiftedAtom(MugInSink, [mug, destination])}
-        delete_effects = {LiftedAtom(MugPickedUp, [gripper, mug])}
+        delete_effects = {
+            LiftedAtom(MugPickedUp, [gripper, mug]),
+            LiftedAtom(AtPrePickUp, [gripper, mug, destination])
+        }
         ignore_effects = {
             AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp
         }
@@ -897,6 +1014,27 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         place_mug_in_sink_nsrt = NSRT("PlaceMugInSink", parameters, preconditions,
                                       add_effects, delete_effects, ignore_effects,
                                       option, option_vars, place_sampler)
+
+        # PlaceSpongeInSink
+        parameters = [gripper, sponge, destination]
+        preconditions = {
+            LiftedAtom(AtPrePickUp, [gripper, sponge, destination]),
+            LiftedAtom(SpongePickedUp, [gripper, sponge]),
+        }
+        add_effects = {LiftedAtom(SpongeInSink, [sponge, destination])}
+        delete_effects = {
+            LiftedAtom(SpongePickedUp, [gripper, sponge]),
+            LiftedAtom(AtPrePickUp, [gripper, sponge, destination])
+        }
+        ignore_effects = {
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp
+        }
+        option = Place
+        option_vars = [gripper, sponge, destination]
+
+        place_sponge_in_sink_nsrt = NSRT("PlaceSpongeInSink", parameters, preconditions,
+                                         add_effects, delete_effects, ignore_effects,
+                                         option, option_vars, place_sampler)
 
         # OpenContainer
         # parameters = [gripper, container]
@@ -979,13 +1117,18 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         # Add new banana search NSRTs
         nsrts.add(move_to_observe_nsrt)
         nsrts.add(observe_container_nsrt)
+        nsrts.add(observe_slide_for_mug_nsrt)  # TEMPORARY HARDCODE: Only allow mug to be found in slide
 
         nsrts.add(move_to_pre_pick_up_banana_nsrt)
         nsrts.add(pick_banana_nsrt)
         nsrts.add(move_to_pre_pick_up_mug_nsrt)
         nsrts.add(pick_mug_nsrt)
+        nsrts.add(move_to_pre_pick_up_sponge_nsrt)
+        nsrts.add(pick_sponge_nsrt)
         nsrts.add(move_to_target_banana_nsrt)
         nsrts.add(move_to_target_mug_nsrt)
+        nsrts.add(move_to_target_sponge_nsrt)
         nsrts.add(place_nsrt)
         nsrts.add(place_mug_in_sink_nsrt)
+        nsrts.add(place_sponge_in_sink_nsrt)
         return nsrts
