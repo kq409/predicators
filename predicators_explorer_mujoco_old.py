@@ -79,6 +79,7 @@ args = {
     "num_test_tasks": 1,
     "kitchen_use_perfect_samplers": True,
     "kitchen_goals": "clean_mug",
+    # "kitchen_goals": "make_tea",
     "pybullet_sim_steps_per_action": 20,
     "pybullet_camera_width": 1674,
     "pybullet_camera_height": 900,

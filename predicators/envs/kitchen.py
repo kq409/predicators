@@ -60,6 +60,9 @@ KETTLE_ON_BURNER4_POS = [-0.269, 0.65, 1.626]
 class KitchenEnv(BaseEnv):
     """Kitchen environment wrapping dm_control Kitchen."""
 
+    # Current env instance for options that need to set MuJoCo state (e.g. hinge2 qpos).
+    _current_env: Optional["KitchenEnv"] = None
+
     # Types
     object_type = Type("object", ["x", "y", "z"])
     gripper_type = Type("gripper", ["x", "y", "z", "qw", "qx", "qy", "qz", "finger1_pos", "finger2_pos"],
@@ -123,7 +126,8 @@ class KitchenEnv(BaseEnv):
     ontop_atol = 0.18  # tolerance for OnTop
     on_angle_thresh = -0.28  # -0.4  # dial is On if less than this threshold
     light_on_thresh = -0.39  # light is On if less than this threshold
-    microhandle_open_thresh = -0.65
+    # microhandle_open_thresh = -0.65
+    microhandle_open_thresh = -0.55
     hinge_open_thresh = 0.084
     cabinet_open_thresh = 0.02
     # slide_open_thresh = 0.2
@@ -147,12 +151,14 @@ class KitchenEnv(BaseEnv):
         ("knob3", "off"): (0.12, -0.12, -0.05),
         ("light", "on"): (0.1, -0.05, -0.05),
         ("light", "off"): (-0.1, -0.05, -0.05),
-        ("microhandle", "on"): (0.0, -0.1, 0.13),
+        # ("microhandle", "on"): (0.0, -0.1, 0.13),
+        ("microhandle", "on"): (0.0, -0.08, 0.08),
         ("microhandle", "off"): (0.0, -0.1, 0.2),
         ("hinge1", "on"): (0.08, -0.02, 0.05),
         ("hinge1", "off"): (-0.3, 0.0, 0.0),
         # ("hinge2", "on"): (0.1, -0.15, 0.0),
         ("hinge2", "on"): (0.02, -0.05, -0.13),    # Changed for opening hinge2
+        # ("hinge2", "on"): (0.02, -0.04, -0.14),    # Changed for opening hinge2
         ("hinge2", "off"): (-0.1, -0.1, 0.0),
         # ("slide", "on"): (-0.2, -0.12, 0.0),
         ("slide", "on"): (-0.07, -0.12, 0.0),
@@ -163,31 +169,33 @@ class KitchenEnv(BaseEnv):
         ("banana", "hinge2"): (0.0, -0.05, 0.05),
         ("banana", "slide"): (0.0, 0.05, 0.0),
         ("banana", "microhandle"): (0.0, -0.05, 0.05),
-        ("mug", "hinge2"): (0.0, 0.0, 0.0),
+        ("mug", "hinge2"): (0.0, -0.1, 0.2),
         ("mug", "slide"): (0.0, -0.1, 0.2),
-        ("mug", "microhandle"): (0.0, 0.0, 0.0),
+        ("mug", "microhandle"): (0.0, -0.1, 0.1),
         ("mug", "sink"): (0.0, 0.0, 0.0),
-        ("sponge", "hinge2"): (0.0, 0.0, 0.0),
+        ("sponge", "hinge2"): (0.0, -0.1, 0.1),
         ("sponge", "slide"): (0.0, -0.1, 0.1),
-        ("sponge", "microhandle"): (0.0, 0.0, 0.0),
+        ("sponge", "microhandle"): (0.0, -0.1, 0.1),
         ("sponge", "sink"): (0.0, 0.0, 0.0),
-        ("tea", "hinge2"): (0.0, 0.0, 0.0),
-        ("tea", "slide"): (0.0, 0.0, 0.0),
-        ("tea", "microhandle"): (0.0, 0.0, 0.0),
+        ("tea", "hinge2"): (0.0, -0.1, 0.1),
+        ("tea", "slide"): (0.0, -0.1, 0.1),
+        ("tea", "microhandle"): (0.0, -0.1, 0.1),
         ("tea", "sink"): (0.0, 0.0, 0.0),
-        ("milk", "hinge2"): (0.0, 0.0, 0.0),
-        ("milk", "slide"): (0.0, 0.0, 0.0),
-        ("milk", "microhandle"): (0.0, 0.0, 0.0),
+        ("milk", "hinge2"): (0.0, -0.1, 0.1),
+        ("milk", "slide"): (0.0, -0.1, 0.1),
+        ("milk", "microhandle"): (0.0, -0.1, 0.1),
         ("milk", "sink"): (0.0, 0.0, 0.0),
     }
 
     obj_name_to_xyz = {
         "hinge1": np.array([-0.682, 0.582, 2.6]),
-        "hinge2": np.array([-0.526, 0.582, 2.6]),
+        # "hinge2": np.array([-0.526, 0.582, 2.6]),
+        "hinge2": np.array([-0.1, 0.582, 2.6]),
         "slide": np.array([-0.108, 0.607, 2.6]),
-        "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
+        # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
+        "microhandle": np.array([-0.3187852, 0.64210206, 1.792]),
         "countertop": np.array([0.0, 0.5, 1.626]),
-        "sink": np.array([0.4, 0.28, 1.9]),
+        "sink": np.array([0.0, 0.5, 1.9]),
     }
 
     def __init__(self, use_gui: bool = True) -> None:
@@ -395,6 +403,9 @@ README of that repo suggests!"
         BananaOnTop = self._pred_name_to_pred["BananaOnTop"]
         MugInSink = self._pred_name_to_pred["MugInSink"]
         SpongeInSink = self._pred_name_to_pred["SpongeInSink"]
+        MugWashed = self._pred_name_to_pred["MugWashed"]
+        TeaMade = self._pred_name_to_pred["TeaMade"]
+        TeaInSink = self._pred_name_to_pred["TeaInSink"]
         goal_preds = set()
         if CFG.kitchen_goals in ["all", "kettle_only"]:
             goal_preds.add(OnTop)
@@ -413,8 +424,9 @@ README of that repo suggests!"
         if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
             goal_preds.add(MugInSink)
         if CFG.kitchen_goals in ["all", "clean_mug"]:
-            goal_preds.add(MugInSink)
-            goal_preds.add(SpongeInSink)
+            goal_preds.add(MugWashed)
+        if CFG.kitchen_goals in ["all", "make_tea"]:
+            goal_preds.add(TeaMade)
         return goal_preds
 
     @classmethod
@@ -458,6 +470,7 @@ README of that repo suggests!"
             Predicate("BananaFound", [cls.banana_type], cls._BananaFound_holds),
             Predicate("MugFound", [cls.mug_type], cls._MugFound_holds),
             Predicate("SpongeFound", [cls.sponge_type], cls._SpongeFound_holds),
+            Predicate("TeaFound", [cls.tea_type], cls._TeaFound_holds),
             Predicate("ContainsSponge", [cls.gripper_type, cls.hinge_door_type], cls._ContainsSponge_holds),
             Predicate("NotContainsSponge", [cls.gripper_type, cls.hinge_door_type], cls._NotContainsSponge_holds),
             Predicate("CanObserve", [cls.hinge_door_type], cls._CanObserve_holds),
@@ -465,8 +478,12 @@ README of that repo suggests!"
             Predicate("BananaPickedUp", [cls.gripper_type, cls.banana_type], cls._BananaPickedUp_holds),
             Predicate("MugPickedUp", [cls.gripper_type, cls.mug_type], cls._MugPickedUp_holds),
             Predicate("SpongePickedUp", [cls.gripper_type, cls.sponge_type], cls._SpongePickedUp_holds),
+            Predicate("TeaPickedUp", [cls.gripper_type, cls.tea_type], cls._TeaPickedUp_holds),
             Predicate("MugInSink", [cls.mug_type, cls.object_type], cls._OnTop_holds),
             Predicate("SpongeInSink", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
+            Predicate("MugWashed", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
+            Predicate("TeaInSink", [cls.tea_type, cls.object_type], cls._OnTop_holds),
+            Predicate("TeaMade", [cls.tea_type, cls.object_type], cls._OnTop_holds),
             # TEMPORARY HARDCODE: Predicate to identify slide container
             Predicate("IsSlide", [cls.hinge_door_type], cls._IsSlide_holds),
         }
@@ -494,6 +511,7 @@ README of that repo suggests!"
 
     def reset(self, train_or_test: str, task_idx: int) -> Observation:
         """Resets the current state to the train or test task initial state."""
+        KitchenEnv._current_env = self
         # Restore gravity if it was modified
         if self._original_gravity is not None:
             self._gym_env.model.opt.gravity[:] = self._original_gravity
@@ -813,6 +831,11 @@ README of that repo suggests!"
         cls._grippable_object_found_status[sponge_name] = found
 
     @classmethod
+    def set_tea_found(cls, tea_name: str = "tea", found: bool = True) -> None:
+        """Set the found status of tea."""
+        cls._grippable_object_found_status[tea_name] = found
+
+    @classmethod
     def get_banana_found(cls, banana_name: str = "banana") -> bool:
         """Get the found status of banana."""
         return cls._grippable_object_found_status.get(banana_name, False)
@@ -892,6 +915,7 @@ README of that repo suggests!"
         banana = self.object_name_to_object("banana")
         mug = self.object_name_to_object("mug")
         sponge = self.object_name_to_object("sponge")
+        tea = self.object_name_to_object("tea")
         sink = self.object_name_to_object("sink")
         goal_desc = self._current_task.goal_description
         kettle_on_burner4 = self._OnTop_holds(state, [kettle, burner4])
@@ -907,6 +931,9 @@ README of that repo suggests!"
         take_out_banana = self._BananaOnTop_holds(state, [banana, burner2])
         mug_in_sink = self._OnTop_holds(state, [mug, sink])
         sponge_in_sink = self._OnTop_holds(state, [sponge, sink])
+        tea_in_sink = self._OnTop_holds(state, [tea, sink])
+        mug_washed = self._OnTop_holds(state, [sponge, sink])
+        tea_made = self._OnTop_holds(state, [tea, sink])
 
         if goal_desc == ("Move the kettle to the back burner and turn it on; "
                          "also turn on the light"):
@@ -933,8 +960,10 @@ README of that repo suggests!"
             return take_out_banana
         if goal_desc == ("Put the mug in the sink"):
             return mug_in_sink
-        if goal_desc == ("CleanMug") or goal_desc == ("Clean the mug"):
-            return mug_in_sink and sponge_in_sink
+        if goal_desc == ("Clean the mug"):
+            return mug_washed
+        if goal_desc == ("Make a cup of tea"):
+            return tea_made
         raise NotImplementedError(f"Unrecognized goal: {goal_desc}")
 
     def _get_tasks(self, num: int,
@@ -942,7 +971,7 @@ README of that repo suggests!"
         tasks = []
 
         assert CFG.kitchen_goals in [
-            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana", "take_out_banana", "put_mug_in_sink", "clean_mug"
+            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "find_banana", "take_out_banana", "put_mug_in_sink", "clean_mug", "make_tea"
         ]
         goal_descriptions: List[str] = []
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -973,7 +1002,9 @@ README of that repo suggests!"
         if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
             goal_descriptions.append("Put the mug in the sink")
         if CFG.kitchen_goals in ["all", "clean_mug"]:
-            goal_descriptions.append("CleanMug")
+            goal_descriptions.append("Clean the mug")
+        if CFG.kitchen_goals in ["all", "make_tea"]:
+            goal_descriptions.append("Make a cup of tea")
         if CFG.kitchen_goals == "all":
             desc = (
                 "Move the kettle to the back left burner and turn it on; also "
@@ -1056,36 +1087,36 @@ README of that repo suggests!"
         # New objects position setting
         if train_or_test == "train":
             object_positions = [
-                [-0.45, 0.8, 2.4],
+                [0.1, 0.9, 2.45],
+                [-0.5, 0.75, 1.7],
                 [0.085, 0.8, 2.45],
-                [-0.4, 0.9, 2.45],
+                [-0.65, 0.75, 1.7],
                 [-0.05, 0.8, 2.45],
-                [-0.45, 1.0, 2.45],
             ]
         else:
             object_positions = [
-                [-0.45, 0.8, 2.4],
+                [0.1, 0.9, 2.45],
+                [-0.5, 0.75, 1.7],
                 [0.085, 0.8, 2.45],
-                [-0.4, 0.9, 2.45],
+                [-0.65, 0.75, 1.7],
                 [-0.05, 0.8, 2.45],
-                [-0.45, 1.0, 2.45],
             ]
 
         # if train_or_test == "train":
         #     object_positions = [
-        #         [-0.45, 0.8, 2.4],
-        #         [0.075, 0.9, 2.45],
-        #         [-0.4, 0.9, 2.45],
-        #         [0.15, 1.0, 2.45],
-        #         [-0.3, 1.0, 2.45],
+        #         [0.1, 0.9, 2.45],
+        #         [-0.45, 0.8, 2.45],
+        #         [0.085, 0.8, 2.45],
+        #         [-0.55, 0.8, 2.45],
+        #         [-0.05, 0.8, 2.45],
         #     ]
         # else:
         #     object_positions = [
-        #         [-0.025, 0.77, 2.4],
-        #         [0.0, 0.0, 0.0],
-        #         [0.0, 0.0, 0.0],
-        #         [0.0, 0.0, 0.0],
-        #         [0.0, 0.0, 0.0],
+        #         [0.1, 0.9, 2.45],
+        #         [-0.45, 0.8, 2.45],
+        #         [0.085, 0.8, 2.45],
+        #         [-0.55, 0.8, 2.45],
+        #         [-0.05, 0.8, 2.45],
         #     ]
             # object_positions = [
             #     # [-0.8, 0.7, 1.7], # Microwave
@@ -1340,8 +1371,8 @@ README of that repo suggests!"
             state.get(container, "z")
         ])
         # Calculate observation position based on container type
-        if container.name in ["slide"]:
-            # For slide cabinet, observe from the side
+        if container.name in ["hinge2"]:
+            # For hinge2 cabinet (where objects are found), observe from the side
             observe_pos = container_xyz + np.array([0.0, -0.2, 0.0])
         elif container.name in ["hinge1", "hinge2"]:
             # For hinge cabinets, observe from the front
@@ -1441,6 +1472,11 @@ README of that repo suggests!"
         return cls._ContainsObject_holds(state, objects, "sponge")
 
     @classmethod
+    def _ContainsTea_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if container contains tea. Delegates to _ContainsObject_holds."""
+        return cls._ContainsObject_holds(state, objects, "tea")
+
+    @classmethod
     def _NotContainsSponge_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if container does not contain sponge."""
         gripper, container = objects
@@ -1485,6 +1521,8 @@ README of that repo suggests!"
                 contains_obj = cls._ContainsMug_holds(state, [gripper, container])
             elif obj_name == "sponge":
                 contains_obj = cls._ContainsSponge_holds(state, [gripper, container])
+            elif obj_name == "tea":
+                contains_obj = cls._ContainsTea_holds(state, [gripper, container])
             else:
                 contains_obj = False
             
@@ -1496,22 +1534,22 @@ README of that repo suggests!"
     def _MugFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if mug has been found. 
         
-        TEMPORARY HARDCODE: Only allow mug to be found in slide container.
+        TEMPORARY HARDCODE: Only allow mug to be found in microhandle container.
         """
         obj = objects[0]
         obj_name = obj.name if hasattr(obj, 'name') else ""
         
-        # TEMPORARY HARDCODE: Only check slide container for mug
+        # TEMPORARY HARDCODE: Only check microhandle container for mug
         gripper = cls.object_name_to_object("gripper")
-        slide_container = cls.object_name_to_object("slide")
+        microhandle_container = cls.object_name_to_object("microhandle")
         
         # First check state variable object.found (set by ObserveContainer option)
         try:
             found_in_state = state.get(obj, "found")
             if found_in_state:
-                # Verify that slide container was observed (mug can only be found in slide)
-                slide_observed = cls._Observed_holds(state, [slide_container])
-                if slide_observed:
+                # Verify that microhandle container was observed (mug can only be found in microhandle)
+                microhandle_observed = cls._Observed_holds(state, [microhandle_container])
+                if microhandle_observed:
                     return True
         except (ValueError, KeyError):
             pass
@@ -1520,16 +1558,16 @@ README of that repo suggests!"
         if obj_name in cls._grippable_object_found_status:
             found_status = cls._grippable_object_found_status[obj_name]
             if found_status:
-                # Verify that slide container was observed
-                slide_observed = cls._Observed_holds(state, [slide_container])
-                if slide_observed:
+                # Verify that microhandle container was observed
+                microhandle_observed = cls._Observed_holds(state, [microhandle_container])
+                if microhandle_observed:
                     return True
         
-        # Backward compatibility: check if slide container contains mug AND has been observed
-        slide_observed = cls._Observed_holds(state, [slide_container])
-        contains_mug = cls._ContainsMug_holds(state, [gripper, slide_container])
+        # Backward compatibility: check if microhandle container contains mug AND has been observed
+        microhandle_observed = cls._Observed_holds(state, [microhandle_container])
+        contains_mug = cls._ContainsMug_holds(state, [gripper, microhandle_container])
         
-        if contains_mug and slide_observed:
+        if contains_mug and microhandle_observed:
             return True
         
         return False
@@ -1545,10 +1583,15 @@ README of that repo suggests!"
         return cls._ObjectFound_holds(state, objects)
 
     @classmethod
+    def _TeaFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if tea has been found. Delegates to _ObjectFound_holds."""
+        return cls._ObjectFound_holds(state, objects)
+
+    @classmethod
     def _IsSlide_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        """TEMPORARY HARDCODE: Check if container is slide."""
+        """TEMPORARY HARDCODE: Check if container is microhandle (container where objects are found)."""
         container = objects[0]
-        return container.name == "slide"
+        return container.name == "microhandle"
 
 
     # @classmethod
@@ -1635,4 +1678,9 @@ README of that repo suggests!"
     def _SpongePickedUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if sponge has been picked up."""
         return cls._grippable_object_grasped_status.get("sponge", False)
+
+    @classmethod
+    def _TeaPickedUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if tea has been picked up."""
+        return cls._grippable_object_grasped_status.get("tea", False)
 

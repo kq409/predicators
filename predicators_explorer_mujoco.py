@@ -102,8 +102,9 @@ args = {
     "use_gui": True,
     "num_test_tasks": 1,
     "kitchen_use_perfect_samplers": True,
-    # "kitchen_goals": "take_out_banana",
-    "kitchen_goals": "find_banana",
+    # Tasks: clean_mug, make_tea (no banana-related tasks)
+    # "kitchen_goals": "clean_mug",
+    "kitchen_goals": "make_tea",
     "pybullet_sim_steps_per_action": 20,
     "pybullet_camera_width": 1674,
     "pybullet_camera_height": 900,
@@ -371,60 +372,59 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
                          captured_views_history: list = None):
     """Generate results.txt by sampling 3D coordinates using diffusion model.
     
-    This function integrates the logic from sample_single_datapoint.py directly.
-    Supports multi-condition sampling using all captured views in history.
+    Uses network_tea_single_object: only RGB-D (image + depth) as input, no floor_plan/camera.
+    When captured_views_history is provided, uses the latest view only for sampling.
     
     Args:
-        test_datapoint_dir: Directory containing test data files
-        model_ckpt: Path to model checkpoint
+        test_datapoint_dir: Directory containing RGB and depth images
+        model_ckpt: Path to model checkpoint (models/tea_single_objects/*/best_model.pth)
         n_sample: Number of samples to generate
         seed: Random seed
-        captured_views_history: List of tuples (cam_view_tensor, depth_tensor) for multi-condition sampling
-                                If None, uses only the current view from test_datapoint_dir
+        captured_views_history: List of (cam_view_tensor, depth_tensor); if set, use last view
     """
     if not _TORCH_AVAILABLE:
         logging.warning("torch/torchvision not available. Skipping results.txt generation.")
         return False
     
-    # Try to import network_final module
+    # Import network_tea_single_object (RGB-D only, no floor_plan/cam_position/cam_rotation)
     try:
-        # Try different paths to find network_final
-        # network_final.py is in the code/ directory
         possible_code_paths = [
-            Path(__file__).parent.parent.parent / "code",  # predicators/../code
-            Path(__file__).parent.parent.parent.parent / "code",  # predicators/predicators/../code
-            Path("code"),  # Relative to current working directory
-            Path.cwd() / "code",  # Absolute path from current working directory
+            Path(__file__).parent.parent.parent / "code",
+            Path(__file__).parent.parent.parent.parent / "code",
+            Path("code"),
+            Path.cwd() / "code",
         ]
-        
-        network_final_path = None
-        for code_path in possible_code_paths:
-            network_final_file = code_path / "network_final.py"
-            if network_final_file.exists():
-                network_final_path = code_path
+        code_path = None
+        for p in possible_code_paths:
+            if (p / "network_tea_single_object.py").exists():
+                code_path = p
                 break
-        
-        if network_final_path is None:
-            logging.warning("Could not find network_final.py in code/ directory. Skipping results.txt generation.")
+        if code_path is None:
+            logging.warning("Could not find network_tea_single_object.py in code/ directory. Skipping results.txt generation.")
             return False
-        
-        # Add the code directory to sys.path if not already there
-        code_path_str = str(network_final_path)
+        code_path_str = str(code_path)
         if code_path_str not in sys.path:
             sys.path.insert(0, code_path_str)
-        
-        from network_final import DDPM, MaskedDenseFusion
-        logging.info(f"Successfully imported network_final from {network_final_path}")
+        from network_tea_single_object import DDPMTeaSingle, MaskedDenseFusionTeaSingle
+        logging.info(f"Successfully imported network_tea_single_object from {code_path}")
     except ImportError as e:
-        logging.warning(f"Could not import network_final module: {e}. Skipping results.txt generation.")
+        logging.warning(f"Could not import network_tea_single_object: {e}. Skipping results.txt generation.")
         return False
     
-    # Default model checkpoint path
+    # Default model checkpoint path: prefer models/tea_single_objects (clean_mug, make_tea tasks)
     if model_ckpt is None:
+        workspace_root = Path(__file__).parent.parent.parent
         possible_model_paths = [
+            # tea_single_objects: mug, tea, sponge (for clean_mug / make_tea)
+            workspace_root / "models" / "tea_single_objects" / "mug" / "best_model.pth",
+            workspace_root / "models" / "tea_single_objects" / "tea" / "best_model.pth",
+            workspace_root / "models" / "tea_single_objects" / "sponge" / "best_model.pth",
+            workspace_root / "models" / "tea_single_objects" / "milk" / "best_model.pth",
+            Path("models/tea_single_objects/mug/best_model.pth"),
+            Path("models/tea_single_objects/tea/best_model.pth"),
             Path("models/mujoco/best_model.pth"),
             Path("code/models/mujoco/best_model.pth"),
-            Path(__file__).parent.parent.parent / "models" / "mujoco" / "best_model.pth",
+            workspace_root / "models" / "mujoco" / "best_model.pth",
         ]
         model_ckpt = None
         for path in possible_model_paths:
@@ -433,32 +433,20 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
                 break
         
         if model_ckpt is None:
-            logging.warning("Model checkpoint not found. Skipping results.txt generation.")
+            logging.warning("Model checkpoint not found in models/tea_single_objects or models/mujoco. Skipping results.txt generation.")
             return False
     
-    # Prepare file paths
+    # Prepare file paths (only RGB-D required)
     rgb_image = str(test_datapoint_dir / "image.png")
     depth_image = str(test_datapoint_dir / "depth.png")
-    floor_plan = str(test_datapoint_dir / "floor_0.png")
-    cam_position_file = str(test_datapoint_dir / "camera_positions.txt")
-    cam_rotation_file = str(test_datapoint_dir / "camera_rotations.txt")
     output_file = str(test_datapoint_dir / "results.txt")
     
-    # Check if floor_0.png exists, if not try floor_plan.png
-    if not Path(floor_plan).exists():
-        floor_plan_alt = str(test_datapoint_dir / "floor_plan.png")
-        if Path(floor_plan_alt).exists():
-            floor_plan = floor_plan_alt
-    
-    # Check if required files exist
+    # Check required files (RGB + depth only)
     if not Path(rgb_image).exists():
         logging.warning(f"RGB image not found: {rgb_image}")
         return False
     if not Path(depth_image).exists():
         logging.warning(f"Depth image not found: {depth_image}")
-        return False
-    if not Path(floor_plan).exists():
-        logging.warning(f"Floor plan not found: {floor_plan}")
         return False
     
     try:
@@ -482,23 +470,20 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logging.info(f"Running diffusion model on {device.upper()}")
         
-        # Model configuration
+        # Model configuration (match network_tea_single_object / training_summary)
         n_feat = 128
-        # n_T = 500
-        n_T = 100
+        n_T = 500
         betas = (1e-4, 0.02)
         
-        # Load model
+        # Load model: DDPMTeaSingle + MaskedDenseFusionTeaSingle (RGB-D only)
         logging.info(f"Loading model from {model_ckpt}...")
-        model = DDPM(
-            nn_model=MaskedDenseFusion(n_feat=n_feat, out_dim=3),
+        model = DDPMTeaSingle(
+            nn_model=MaskedDenseFusionTeaSingle(n_feat=n_feat, out_dim=3),
             betas=betas,
             n_T=n_T,
             device=device,
         )
-        # model.load_state_dict(torch.load(model_ckpt, map_location=device))
         ckpt = torch.load(model_ckpt, map_location=device)
-        # 只加载 nn_model 部分，避免 schedule buffer 形状冲突
         model_dict = model.state_dict()
         pretrained = {k: v for k, v in ckpt.items() if k.startswith("nn_model.") and k in model_dict and model_dict[k].shape == v.shape}
         model_dict.update(pretrained)
@@ -507,107 +492,35 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
         model.eval()
         logging.info("Model loaded successfully.")
         
-        # Build transforms
-        transform_RGB, transform_Gray, transform_depth = build_transforms()
+        transform_RGB, _, transform_depth = build_transforms()
         
-        # Load floor plan (same for all conditions)
-        logging.info(f"Loading floor plan from {floor_plan}...")
-        floor_plan_img = PILImage.open(floor_plan).convert("L")
-        floor_plan_tensor = transform_Gray(floor_plan_img).unsqueeze(0).to(device).float()
-        
-        # Load and normalize camera position (same for all conditions)
-        logging.info(f"Loading camera position from {cam_position_file}...")
-        cam_pos = load_camera_position_from_file(cam_position_file)
-        coord_normalizer_camera = CoordMinMaxNormalize(
-            min_val=[-1.67596, -1.664377, -1.677289],
-            max_val=[1.675633, 1.675588, 1.57116]
-        )
-        cam_position = coord_normalizer_camera(torch.tensor(cam_pos, dtype=torch.float32))
-        cam_position = cam_position.unsqueeze(0).to(device).float()
-        
-        # Load camera rotation (same for all conditions)
-        logging.info(f"Loading camera rotation from {cam_rotation_file}...")
-        cam_rot = load_camera_rotation_from_file(cam_rotation_file)
-        cam_rotation = torch.tensor(cam_rot, dtype=torch.float32).unsqueeze(0).to(device).float()
-        
-        # Prepare multi-condition inputs
+        # Get depth and cam_view: from latest captured view or from disk
         if captured_views_history is not None and len(captured_views_history) > 0:
-            # Use all captured views from history for multi-condition sampling
-            logging.info(f"Using {len(captured_views_history)} captured views for multi-condition sampling...")
-            cam_view_list = []
-            depth_list = []
-            
-            for view_idx, (cam_view_tensor, depth_tensor) in enumerate(captured_views_history):
-                cam_view_list.append(cam_view_tensor)
-                depth_list.append(depth_tensor)
-                logging.info(f"  Condition {view_idx + 1}: cam_view shape {cam_view_tensor.shape}, depth shape {depth_tensor.shape}")
-            
-            # Prepare lists for multi-condition sampling
-            # floor_plan, cam_position, cam_rotation are the same for all conditions
-            floor_plan_list = [floor_plan_tensor] * len(captured_views_history)
-            cam_position_list = [cam_position] * len(captured_views_history)
-            cam_rotation_list = [cam_rotation] * len(captured_views_history)
-            
-            logging.info("All multi-condition inputs prepared successfully.")
-            
-            # Set guide weights based on number of conditions
-            n_conditions = len(captured_views_history)
-            if n_conditions == 1:
-                # Single condition: use default weights
-                guide_weights = None
-                logging.info("Single condition detected. Using default weights.")
-            else:
-                # Multiple conditions: give higher weight to latest condition, lower to older ones
-                # Latest condition (last in list) gets weight 1.0, older conditions get decreasing weights
-                # Example for 3 conditions: [0.3, 0.6, 1.0] - oldest to newest
-                guide_weights = []
-                for i in range(n_conditions):
-                    # Weight increases linearly from 0.3 for oldest to 1.0 for newest
-                    weight = 0.3 + (i / (n_conditions - 1)) * 0.7 if n_conditions > 1 else 1.0
-                    guide_weights.append(weight)
-                logging.info(f"Multiple conditions ({n_conditions}) detected. Guide weights: {guide_weights} (oldest to newest)")
-            
-            # Perform multi-condition sampling
-            logging.info(f"Sampling {n_sample} 3D coordinates with {len(captured_views_history)} conditions...")
-            start_time = time.perf_counter()
-            with torch.no_grad():
-                generated_coords, _ = model.sample_multi_condition(
-                    n_sample=n_sample,
-                    floor_plan_list=floor_plan_list,
-                    depth_list=depth_list,
-                    cam_position_list=cam_position_list,
-                    cam_rotation_list=cam_rotation_list,
-                    cam_view_list=cam_view_list,
-                    device=device,
-                    guide_weights=None,  # Use default equal weights
-                )
+            cam_view_tensor, depth_tensor = captured_views_history[-1]
+            cam_view = cam_view_tensor.to(device).float()
+            depth = depth_tensor.to(device).float()
+            if cam_view.dim() == 3:
+                cam_view = cam_view.unsqueeze(0)
+            if depth.dim() == 3:
+                depth = depth.unsqueeze(0)
+            logging.info(f"Using latest of {len(captured_views_history)} captured views (RGB-D only).")
         else:
-            # Fallback to single condition (current view only)
-            logging.info("Using single condition (current view only)...")
-            logging.info(f"Loading RGB image from {rgb_image}...")
+            logging.info(f"Loading RGB and depth from {test_datapoint_dir}...")
             rgb_img = PILImage.open(rgb_image).convert("RGB")
             cam_view = transform_RGB(rgb_img).unsqueeze(0).to(device).float()
-            
-            logging.info(f"Loading depth image from {depth_image}...")
             depth_img = PILImage.open(depth_image).convert("L")
             depth = transform_depth(depth_img).unsqueeze(0).to(device).float()
-            
-            logging.info("All inputs loaded and preprocessed successfully.")
-            
-            # Perform single-condition sampling
-            logging.info(f"Sampling {n_sample} 3D coordinates...")
-            start_time = time.perf_counter()
-            with torch.no_grad():
-                generated_coords, _ = model.sample(
-                    n_sample=n_sample,
-                    floor_plan=floor_plan_tensor,
-                    depth=depth,
-                    cam_position=cam_position,
-                    cam_rotation=cam_rotation,
-                    cam_view=cam_view,
-                    device=device,
-                    guide_w=1.0,
-                )
+        
+        logging.info("Sampling 3D coordinates (RGB-D only)...")
+        start_time = time.perf_counter()
+        with torch.no_grad():
+            generated_coords, _ = model.sample(
+                n_sample=n_sample,
+                depth=depth,
+                cam_view=cam_view,
+                device=device,
+                guide_w=1.0,
+            )
         end_time = time.perf_counter()
         
         sampling_time = end_time - start_time

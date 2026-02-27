@@ -35,7 +35,7 @@ class OracleRefinementEstimator(BaseRefinementEstimator):
                                                 skeleton, atoms_sequence)
 
         if env_name == "kitchen":
-            # Calculate probabilities for four regions based on banana position
+            # Calculate probabilities for four regions based on object positions (mug, tea, sponge for clean_mug/make_tea)
             region_probs = calculate_kitchen_region_probs(self._env, initial_task.init)
             return kitchen_oracle_estimator(self._env, initial_task.init,
                                             skeleton, atoms_sequence, region_probs)
@@ -171,15 +171,17 @@ def point_in_region(point: tuple, region: Dict) -> bool:
     return in_x and in_y and in_z
 
 
-def load_banana_coordinates(file_path: str = None) -> List[tuple]:
+def load_object_coordinates(file_path: str = None) -> List[tuple]:
     """
-    Load banana coordinates from results.txt file.
+    Load object coordinates from results.txt file.
+    Used for clean_mug and make_tea tasks: positions are for mug, tea, sponge
+    (sampled from models in models/tea_single_objects).
     
     Args:
         file_path: Path to results.txt file. If None, uses default path.
         
     Returns:
-        List of (x, y, z) tuples representing banana positions
+        List of (x, y, z) tuples representing object positions
     """
     if file_path is None:
         # Default path: predicators/test_datapoint/results.txt
@@ -230,11 +232,12 @@ def load_banana_coordinates(file_path: str = None) -> List[tuple]:
 
 def calculate_kitchen_region_probs(env: BaseEnv, initial_state: State) -> Dict[str, float]:
     """
-    Calculate probabilities for four regions based on banana positions from results.txt.
+    Calculate probabilities for four regions based on object positions from results.txt.
+    Used for clean_mug and make_tea tasks (objects: mug, tea, sponge).
     Returns a dictionary mapping region names to probabilities.
     
-    The probabilities are calculated by analyzing all banana positions in results.txt
-    and computing the percentage of points in each region.
+    The probabilities are calculated by analyzing all object positions in results.txt
+    (from models/tea_single_objects) and computing the percentage of points in each region.
     
     Args:
         env: Kitchen environment instance (unused, kept for compatibility)
@@ -242,11 +245,11 @@ def calculate_kitchen_region_probs(env: BaseEnv, initial_state: State) -> Dict[s
         
     Returns:
         Dictionary with keys: 'microwave', 'right_hinge_cabinet', 'slide_cabinet', 'tabletop'
-        Values are probabilities (0.0 to 1.0) representing the percentage of banana
+        Values are probabilities (0.0 to 1.0) representing the percentage of object
         positions in each region
     """
-    # Load banana coordinates from results.txt
-    coordinates = load_banana_coordinates()
+    # Load object coordinates from results.txt (from diffusion models in tea_single_objects)
+    coordinates = load_object_coordinates()
     
     if not coordinates:
         # If no coordinates found, return uniform probabilities
@@ -316,7 +319,7 @@ def kitchen_oracle_estimator(
     With the assumption c_a = c'_a = C (success and failure costs are equal):
     ĉ = C / p_a
     
-    Where p_a is the success probability of finding banana in a container.
+    Where p_a is the success probability of finding the target object (mug, tea, sponge) in a container.
     
     Args:
         env: Kitchen environment instance

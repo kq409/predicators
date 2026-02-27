@@ -585,13 +585,12 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                 if objs[1].name == "slide":
                     push_angle = 1 * np.pi / 8
                 elif objs[1].name == "microhandle":
-                    push_angle = 12 * np.pi / 8
+                    push_angle = 9 * np.pi / 8
                     # push_angle = 17 * np.pi / 16
                 # elif objs[1].name == "hinge2":
                 #     push_angle = -9 * np.pi / 32
                 elif objs[1].name == "hinge2":
-                    # push_angle = -4 * np.pi / 16
-                    push_angle = -5 * np.pi / 4
+                    push_angle = -4 * np.pi / 16
                 else:
                     push_angle = -np.pi / 2
             else:
