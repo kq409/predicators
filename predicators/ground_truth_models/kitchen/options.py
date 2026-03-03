@@ -131,7 +131,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                     # ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
                     (cls.home_pos, init_quat),
                     ((ox + dx - 0.3, oy + dy - 0.1, oz + 0.2), prepullmicro_quat),
-                    ((ox + dx - 0.2, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
+                    # ((ox + dx - 0.2, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
                     ((ox + dx, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
                     (target_pose, prepullmicro_quat),
                 ]
@@ -670,7 +670,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 memory["target_quat"] = prepullmicro_quat
                 memory["waypoints"] = [
                     ((gx + 0.1, gy - 0.2, gz), prepullmicro_quat),
-                    ((gx + 0.1, gy - 0.1, gz), prepullmicro_quat),
+                    ((gx + 0.1, gy - 0.05, gz), prepullmicro_quat),
                     # ((gx, gy, gz), prepullmicro_quat),
                 ]
                 print(f"waypoints: {memory['waypoints']}")
@@ -713,11 +713,11 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             elif objects[1].name == "microhandle":
                 if memory["flag"] == 0:
                     print(f"flag: {memory['flag']}")
-                    if gx <= -0.1:
+                    if gx <= -0.075:
                         memory["flag"] = 1
                         print("set flag to 1")
                         memory["waypoints"] = [
-                            ((gx, gy - 0.1, gz), prepullmicro_quat),
+                            ((gx + 0.1, gy - 0.1, gz), prepullmicro_quat),
                         ] + memory["waypoints"]
                         arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                                 dtype=np.float32)
@@ -744,6 +744,11 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                         droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
                         arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
                                 dtype=np.float32)
+                        action_mag = np.linalg.norm(arr)
+                        if action_mag > cls.max_delta_mag:
+                            scale = cls.max_delta_mag / action_mag
+                            arr = arr * scale
+                        print(f"arr: {arr}")
                     # else:
                     #     dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
                     #     target_euler = quat2euler(way_quat)

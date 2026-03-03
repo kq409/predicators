@@ -195,7 +195,7 @@ class KitchenEnv(BaseEnv):
         # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
         "microhandle": np.array([-0.3187852, 0.74210206, 1.792]),
         "countertop": np.array([0.0, 0.5, 1.626]),
-        "sink": np.array([0.0, 0.5, 1.9]),
+        "sink": np.array([0.2, 0.3, 1.9]),
     }
 
     def __init__(self, use_gui: bool = True) -> None:
@@ -1088,17 +1088,17 @@ README of that repo suggests!"
         if train_or_test == "train":
             object_positions = [
                 [0.1, 0.9, 2.45],
-                [-0.1, 0.9, 1.7],
+                [-0.15, 0.85, 1.7],
                 [0.085, 0.8, 2.45],
-                [-0.3, 0.9, 1.7],
+                [-0.3, 0.85, 1.7],
                 [-0.05, 0.8, 2.45],
             ]
         else:
             object_positions = [
                 [0.1, 0.9, 2.45],
-                [-0.1, 0.9, 1.7],
+                [-0.15, 0.85, 1.7],
                 [0.085, 0.8, 2.45],
-                [-0.3, 0.9, 1.7],
+                [-0.3, 0.85, 1.7],
                 [-0.05, 0.8, 2.45],
             ]
 
