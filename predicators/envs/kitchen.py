@@ -152,7 +152,7 @@ class KitchenEnv(BaseEnv):
         ("light", "on"): (0.1, -0.05, -0.05),
         ("light", "off"): (-0.1, -0.05, -0.05),
         # ("microhandle", "on"): (0.0, -0.1, 0.13),
-        ("microhandle", "on"): (0.0, -0.08, 0.08),
+        ("microhandle", "on"): (0.02, -0.08, 0.08),
         ("microhandle", "off"): (0.0, -0.1, 0.2),
         ("hinge1", "on"): (0.08, -0.02, 0.05),
         ("hinge1", "off"): (-0.3, 0.0, 0.0),
@@ -193,7 +193,7 @@ class KitchenEnv(BaseEnv):
         "hinge2": np.array([-0.1, 0.582, 2.6]),
         "slide": np.array([-0.108, 0.607, 2.6]),
         # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
-        "microhandle": np.array([-0.3187852, 0.64210206, 1.792]),
+        "microhandle": np.array([-0.3187852, 0.74210206, 1.792]),
         "countertop": np.array([0.0, 0.5, 1.626]),
         "sink": np.array([0.0, 0.5, 1.9]),
     }
@@ -1088,17 +1088,17 @@ README of that repo suggests!"
         if train_or_test == "train":
             object_positions = [
                 [0.1, 0.9, 2.45],
-                [-0.5, 0.75, 1.7],
+                [-0.1, 0.9, 1.7],
                 [0.085, 0.8, 2.45],
-                [-0.65, 0.75, 1.7],
+                [-0.3, 0.9, 1.7],
                 [-0.05, 0.8, 2.45],
             ]
         else:
             object_positions = [
                 [0.1, 0.9, 2.45],
-                [-0.5, 0.75, 1.7],
+                [-0.1, 0.9, 1.7],
                 [0.085, 0.8, 2.45],
-                [-0.65, 0.75, 1.7],
+                [-0.3, 0.9, 1.7],
                 [-0.05, 0.8, 2.45],
             ]
 

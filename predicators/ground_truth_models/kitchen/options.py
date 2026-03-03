@@ -31,7 +31,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
     min_delta_mag: ClassVar[float] = 0.4  # don't move less than this per step
     max_push_mag: ClassVar[float] = 0.05  # for pushing forward
     # A reasonable home position for the end effector.
-    home_pos: ClassVar[Pose3D] = (0.0, 0.37, 2.1)
+    home_pos: ClassVar[Pose3D] = (-0.2, 0.37, 2.1)
     # Keep pushing a bit even if the On classifier holds.
     push_lr_thresh_pad: ClassVar[float] = 0.02
     push_microhandle_thresh_pad: ClassVar[float] = 0.02
@@ -128,9 +128,11 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             elif obj.name == "microhandle":
                 target_quat = angled_quat
                 memory["waypoints"] = [
-                    ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
+                    # ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
                     (cls.home_pos, init_quat),
-                    ((ox + dx, oy + dy - 0.3, oz + 0.1), prepullmicro_quat),
+                    ((ox + dx - 0.3, oy + dy - 0.1, oz + 0.2), prepullmicro_quat),
+                    ((ox + dx - 0.2, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
+                    ((ox + dx, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
                     (target_pose, prepullmicro_quat),
                 ]
                 print(f"Moves away from handle to prevent collision.")
@@ -184,8 +186,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             distance_obj = np.linalg.norm(np.array([gx, gy, gz]) - np.array([ox, oy, oz]))
 
             if len(objects) == 2:
-                tol = cls.moveto_tol
-                # tol = 0.02
+                # tol = cls.moveto_tol
+                tol = 0.015
             elif len(objects) == 3:
                 tol = 0.05
             else:
@@ -233,8 +235,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             # Change the tolerance for different objects
             gripper, obj = objects[0], objects[1]
             if obj.name == "microhandle":
-                # tol = 0.02
-                tol = 0.01
+                tol = 0.015
+                # tol = 0.01
             elif obj.name == "hinge2":
                 tol = 0.03
             elif obj.name == "slide":
@@ -666,6 +668,13 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             memory["current_pose"] = (gx, gy, gz)
             if obj.name == "microhandle":
                 memory["target_quat"] = prepullmicro_quat
+                memory["waypoints"] = [
+                    ((gx + 0.1, gy - 0.2, gz), prepullmicro_quat),
+                    ((gx + 0.1, gy - 0.1, gz), prepullmicro_quat),
+                    # ((gx, gy, gz), prepullmicro_quat),
+                ]
+                print(f"waypoints: {memory['waypoints']}")
+                memory["flag"] = 0
             elif obj.name == "hinge2":
                 memory["target_quat"] = prepullhinge_quat
             elif obj.name == "slide":
@@ -693,18 +702,61 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             target_euler = quat2euler(target_quat)
             droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
             _, _, dz = np.subtract((gx, gy, gz), memory["current_pose"])
-            print(f"droll: {droll}, dpitch: {dpitch}, dyaw: {dyaw}")
+            # print(f"droll: {droll}, dpitch: {dpitch}, dyaw: {dyaw}")
+            print(f"gx, gy, gz: {gx}, {gy}, {gz}")
 
             if objects[1].name == "hinge2":
                 unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
                 dx = unit_x * cls.max_push_mag / 2.0
                 dy = unit_y * cls.max_push_mag / 2.0
                 arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)
-            else:
-                unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
-                dx = unit_x * cls.max_push_mag / 2.0
-                dy = unit_y * cls.max_push_mag / 2.0
-                arr = np.array([dx, dy, -0.01, droll, dpitch, dyaw, -1.0],
+            elif objects[1].name == "microhandle":
+                if memory["flag"] == 0:
+                    print(f"flag: {memory['flag']}")
+                    if gx <= -0.1:
+                        memory["flag"] = 1
+                        print("set flag to 1")
+                        memory["waypoints"] = [
+                            ((gx, gy - 0.1, gz), prepullmicro_quat),
+                        ] + memory["waypoints"]
+                        arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                dtype=np.float32)
+                    else:
+                        unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
+                        dx = unit_x * cls.max_push_mag / 2.0
+                        dy = unit_y * cls.max_push_mag / 2.0
+                        arr = np.array([dx, dy, -0.01, droll, dpitch, dyaw, -1.0],
+                                dtype=np.float32)
+                elif memory["flag"] == 1:
+                    print(f"flag: {memory['flag']}")
+                    if np.allclose((gx, gy, gz), memory["waypoints"][-1][0], atol=0.0125):
+                        memory["flag"] = 2
+                        print("set flag to 2")
+                        arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                dtype=np.float32)
+                    else:
+                        way_pos, way_quat = memory["waypoints"][0]
+                        if np.allclose((gx, gy, gz), way_pos, atol=0.0125):
+                            memory["waypoints"].pop(0)
+                            way_pos, way_quat = memory["waypoints"][0]
+                        dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
+                        target_euler = quat2euler(way_quat)
+                        droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+                        arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
+                                dtype=np.float32)
+                    # else:
+                    #     dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
+                    #     target_euler = quat2euler(way_quat)
+                    #     droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+                    #     arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
+                    #             dtype=np.float32)
+                elif memory["flag"] == 2:
+                    print(f"flag: {memory['flag']}")
+                    push_angle = -7 * np.pi / 8
+                    unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
+                    dx = unit_x * cls.max_push_mag / 2.0
+                    dy = unit_y * cls.max_push_mag / 2.0
+                    arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0],
                             dtype=np.float32)
             
             # print(f"PushOpen action: {arr.tolist()}")
@@ -984,10 +1036,13 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 elif obj_place.name == "microhandle":
                     target_quat = angled_quat
                     memory["waypoints"] = [
-                        ((gx, gy - 0.15, gz + 0.3), down_quat),
+                        # ((gx, gy - 0.15, gz + 0.3), down_quat),
+                        ((gx, gy - 0.1, gz + 0.1), down_quat),
                         (cls.home_pos, angled_quat),
                         ((ox + dx + 0.25, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
                         ((ox + dx, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
+                        ((ox + dx, oy + dy - 0.15, oz + dz + 0.05), angled_quat),
+                        ((ox + dx, oy + dy - 0.05, oz + dz), angled_quat),
                         # ((ox + dx, oy + dy, oz + dz), angled_quat),
                         (target_pose, angled_quat),
                     ]
