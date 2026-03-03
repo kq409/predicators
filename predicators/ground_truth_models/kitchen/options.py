@@ -141,7 +141,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 memory["waypoints"] = [
                     ((gx, gy - 0.10, gz), current_quat),
                     ((gx, gy - 0.15, gz), down_quat),
-                    ((0.2, 0.5, 2.1), init_quat),
+                    (cls.home_pos, init_quat),
                     (target_pose, target_quat),
                     ]
                 print(f"MoveTo slide waypoints: {memory['waypoints']}")
@@ -710,6 +710,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 dx = unit_x * cls.max_push_mag / 2.0
                 dy = unit_y * cls.max_push_mag / 2.0
                 arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)
+                hinge2_x = state.get(objects[1], "x")
+                print(f"hinge2 angle: {hinge2_x}")
             elif objects[1].name == "microhandle":
                 if memory["flag"] == 0:
                     print(f"flag: {memory['flag']}")
@@ -763,6 +765,12 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                     dy = unit_y * cls.max_push_mag / 2.0
                     arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0],
                             dtype=np.float32)
+            elif objects[1].name == "slide":
+                unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
+                dx = unit_x * cls.max_push_mag / 2.0
+                dy = unit_y * cls.max_push_mag / 2.0
+                arr = np.array([dx, dy, 0.01, 0.0, 0.0, 0.0, -1.0],
+                                dtype=np.float32)
             
             # print(f"PushOpen action: {arr.tolist()}")
             # print(f"Object angle: {state.get(objects[1], 'angle')}")
@@ -780,11 +788,11 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             is_open = KitchenEnv.Open_holds(
                 state, [obj], thresh_pad=cls.push_microhandle_thresh_pad)
             # When hinge2 (right_hinge_cabinet) is considered open, set qpos to 0.8
-            if is_open and obj.name == "hinge2":
-                env = getattr(KitchenEnv, "_current_env", None)
-                if env is not None:
-                    env.set_joint("right_hinge_cabinet", 1.5)
-                    print("Set right_hinge_cabinet qpos to 1.5")
+            # if is_open and obj.name == "hinge2":
+            #     env = getattr(KitchenEnv, "_current_env", None)
+            #     if env is not None:
+            #         env.set_joint("right_hinge_cabinet", 1.5)
+            #         print("Set right_hinge_cabinet qpos to 1.5")
             # if is_open and obj.name == "microhandle":
             #     env = getattr(KitchenEnv, "_current_env", None)
             #     if env is not None:
@@ -1031,10 +1039,11 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 elif obj_place.name == "hinge2":
                     target_quat = angled_quat
                     memory["waypoints"] = [
-                        ((home_x, home_y, home_z + 0.1), down_quat),
-                        ((home_x - 0.25, home_y - 0.25, home_z + 0.2), down_quat),
+                        ((gx, gy - 0.10, gz - 0.15), current_quat),
+                        ((home_x, home_y, home_z), angled_quat),
+
                         # ((ox + dx - 0.05, oy + dy - 0.25, oz + dz - 0.1), angled_quat),
-                        ((ox + dx - 0.1, oy + dy - 0.35, oz + dz), fwd_quat),
+                        ((ox + dx + 0.1, oy + dy - 0.2, oz + dz), fwd_quat),
                         ((ox + dx, oy + dy, oz + dz), angled_quat),
                         (target_pose, angled_quat),
                     ]
@@ -1044,10 +1053,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                         # ((gx, gy - 0.15, gz + 0.3), down_quat),
                         ((gx, gy - 0.1, gz + 0.1), down_quat),
                         (cls.home_pos, angled_quat),
-                        ((ox + dx + 0.25, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
+                        ((ox + dx + 0.15, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
                         ((ox + dx, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
-                        ((ox + dx, oy + dy - 0.15, oz + dz + 0.05), angled_quat),
-                        ((ox + dx, oy + dy - 0.05, oz + dz), angled_quat),
+                        # ((ox + dx, oy + dy - 0.15, oz + dz + 0.05), angled_quat),
+                        # ((ox + dx, oy + dy - 0.05, oz + dz), angled_quat),
                         # ((ox + dx, oy + dy, oz + dz), angled_quat),
                         (target_pose, angled_quat),
                     ]
@@ -1070,7 +1079,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             
             tol = 0.05
             if obj_place.name == "hinge2":
-                tol = 0.17
+                tol = 0.05
             elif obj_place.name == "microhandle":
                 # tol = 0.2
                 tol = 0.05
@@ -1247,10 +1256,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 target_quat = angled_quat
                 memory["waypoints"] = [
                     ((gx, gy - 0.35, gz + 0.1), current_quat),
-                    ((home_x - 0.25, home_y - 0.25, home_z + 0.2), target_quat),
+                    ((home_x, home_y, home_z), current_quat),
                     # ((tx + dx, ty + dy, tz + dz), target_quat),
-                    ((tx, ty, tz + 0.1), target_quat),
-                    (target_pose, target_quat),
+                    ((tx, ty, tz + 0.1), current_quat),
+                    (target_pose, current_quat),
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             elif origin.name == "slide":

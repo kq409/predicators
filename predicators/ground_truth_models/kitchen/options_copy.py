@@ -643,14 +643,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _PushOpen_initiable(state: State, memory: Dict,
                                 objects: Sequence[Object],
                                 params: Array) -> bool:
-            
-            gripper = objects[0]
-            obj = objects[1]
-            if obj.name == "microhandle":
-                env = getattr(KitchenEnv, "_current_env", None)
-                if env is not None:
-                    env.set_joint("microwave", -0.9)
-                    print("Set microwave qpos to -0.9")
+            # No hardcoded microwave state; always initiable.
             return True
 
         def _PushOpen_policy(state: State, memory: Dict,
@@ -688,17 +681,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             # Use a more stringent threshold to avoid numerical issues.
             is_open = KitchenEnv.Open_holds(
                 state, [obj], thresh_pad=cls.push_microhandle_thresh_pad)
-            # When hinge2 (right_hinge_cabinet) is considered open, set qpos to 0.8
-            if is_open and obj.name == "hinge2":
-                env = getattr(KitchenEnv, "_current_env", None)
-                if env is not None:
-                    env.set_joint("right_hinge_cabinet", 1.5)
-                    print("Set right_hinge_cabinet qpos to 1.5")
-            if is_open and obj.name == "microhandle":
-                env = getattr(KitchenEnv, "_current_env", None)
-                if env is not None:
-                    env.set_joint("microwave", -0.9)
-                    print("Set microwave qpos to -0.9")
+            # Do not hardcode microwave or cabinet joint positions here; rely on environment dynamics.
             return is_open
 
         PushOpen = ParameterizedOption(

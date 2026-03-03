@@ -676,8 +676,8 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                                    moveto_observe_sampler)
 
         # ObserveContainer - unified observe NSRT, always assume every object can be found during planning
-        # But actually decide whether a certain object is found based on actual situation during execution
-        # TEMPORARY HARDCODE: Removed MugFound/TeaFound from add_effects - only added in ObserveSlideForMug (microhandle)
+        # But actually decide whether a certain object is found based on actual situation during execution.
+        # Here we do NOT restrict which container can contain which object; MugFound/TeaFound are added for any container.
         parameters = [gripper, container, banana, mug, sponge, tea]
         preconditions = {
             LiftedAtom(AtPreObserve, [gripper, container]),
@@ -685,11 +685,12 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             LiftedAtom(CanObserve, [container]),
             LiftedAtom(NotObserved, [container])
         }
-        # Assume always find banana and sponge during planning (optimistic planning)
+        # Assume always find banana, mug, sponge, and tea during planning (optimistic planning)
         add_effects = {
             LiftedAtom(BananaFound, [banana]),
             LiftedAtom(SpongeFound, [sponge]),
-            # TEMPORARY HARDCODE: Removed MugFound/TeaFound - only in microhandle (ObserveSlideForMug)
+            LiftedAtom(MugFound, [mug]),
+            LiftedAtom(TeaFound, [tea]),
             LiftedAtom(Observed, [container])
         }
         delete_effects = {LiftedAtom(NotObserved, [container])}
@@ -710,37 +711,6 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                                      delete_effects, ignore_effects,
                                      option, option_vars,
                                      observe_container_sampler)
-
-        # ObserveSlideForMug - TEMPORARY HARDCODE: Only allow mug/tea to be found in microhandle container
-        # This NSRT is identical to ObserveContainer but adds MugFound and TeaFound when container is microhandle
-        # Use container variable (not fixed microhandle_container) but add IsSlide precondition to restrict grounding
-        parameters = [gripper, container, banana, mug, sponge, tea]
-        preconditions = {
-            LiftedAtom(AtPreObserve, [gripper, container]),
-            LiftedAtom(Open, [container]),
-            LiftedAtom(CanObserve, [container]),
-            LiftedAtom(NotObserved, [container]),
-            LiftedAtom(IsSlide, [container])  # TEMPORARY HARDCODE: Only allow microhandle container
-        }
-        add_effects = {
-            LiftedAtom(BananaFound, [banana]),
-            LiftedAtom(SpongeFound, [sponge]),
-            LiftedAtom(MugFound, [mug]),  # Only add MugFound for microhandle container
-            LiftedAtom(TeaFound, [tea]),  # Only add TeaFound for microhandle container (needed for MakeTea)
-            LiftedAtom(Observed, [container])
-        }
-        delete_effects = {LiftedAtom(NotObserved, [container])}
-        ignore_effects = {
-            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
-        }
-        option = ObserveContainer
-        option_vars = [gripper, container, banana, mug, sponge, tea]
-
-        observe_slide_for_mug_nsrt = NSRT("ObserveSlideForMug", parameters,
-                                         preconditions, add_effects,
-                                         delete_effects, ignore_effects,
-                                         option, option_vars,
-                                         observe_container_sampler)
 
         # MoveToPrePickUpBanana
         parameters = [gripper, banana, container]
@@ -1224,7 +1194,6 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         # Add new banana search NSRTs
         nsrts.add(move_to_observe_nsrt)
         nsrts.add(observe_container_nsrt)
-        nsrts.add(observe_slide_for_mug_nsrt)  # TEMPORARY HARDCODE: Only allow mug to be found in hinge2
 
         nsrts.add(move_to_pre_pick_up_banana_nsrt)
         nsrts.add(pick_banana_nsrt)

@@ -592,7 +592,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                 #     push_angle = -9 * np.pi / 32
                 elif objs[1].name == "hinge2":
                     # push_angle = -4 * np.pi / 16
-                    push_angle = -5 * np.pi / 4
+                    push_angle = -7 * np.pi / 8
                 else:
                     push_angle = -np.pi / 2
             else:

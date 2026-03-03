@@ -131,7 +131,7 @@ class KitchenEnv(BaseEnv):
     hinge_open_thresh = 0.084
     cabinet_open_thresh = 0.02
     # slide_open_thresh = 0.2
-    slide_open_thresh = 0.15
+    slide_open_thresh = 0.27
     at_pre_pushontop_yz_atol = 0.1  # tolerance for AtPrePushOnTop
     at_pre_pullontop_yz_atol = 0.04  # tolerance for AtPrePullOnTop
     at_pre_pushontop_x_atol = 1.0  # other tolerance for AtPrePushOnTop
@@ -157,11 +157,11 @@ class KitchenEnv(BaseEnv):
         ("hinge1", "on"): (0.08, -0.02, 0.05),
         ("hinge1", "off"): (-0.3, 0.0, 0.0),
         # ("hinge2", "on"): (0.1, -0.15, 0.0),
-        ("hinge2", "on"): (0.02, -0.05, -0.13),    # Changed for opening hinge2
+        ("hinge2", "on"): (0.02, -0.08, -0.05),    # Changed for opening hinge2
         # ("hinge2", "on"): (0.02, -0.04, -0.14),    # Changed for opening hinge2
         ("hinge2", "off"): (-0.1, -0.1, 0.0),
         # ("slide", "on"): (-0.2, -0.12, 0.0),
-        ("slide", "on"): (-0.07, -0.12, 0.0),
+        ("slide", "on"): (-0.07, -0.05, 0.0),
         ("slide", "off"): (0.15, -0.1, 0.0),
     }
 
@@ -191,7 +191,7 @@ class KitchenEnv(BaseEnv):
         "hinge1": np.array([-0.682, 0.582, 2.6]),
         # "hinge2": np.array([-0.526, 0.582, 2.6]),
         "hinge2": np.array([-0.1, 0.582, 2.6]),
-        "slide": np.array([-0.108, 0.607, 2.6]),
+        "slide": np.array([-0.108, 0.507, 2.6]),
         # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
         "microhandle": np.array([-0.3187852, 0.74210206, 1.792]),
         "countertop": np.array([0.0, 0.5, 1.626]),
@@ -1088,35 +1088,35 @@ README of that repo suggests!"
         if train_or_test == "train":
             object_positions = [
                 [0.1, 0.9, 2.45],
+                [-0.3, 0.7, 2.45],
                 [-0.15, 0.85, 1.7],
-                [0.085, 0.8, 2.45],
+                [-0.45, 0.7, 2.45],
                 [-0.3, 0.85, 1.7],
-                [-0.05, 0.8, 2.45],
             ]
         else:
             object_positions = [
                 [0.1, 0.9, 2.45],
+                [-0.3, 0.7, 2.45],
                 [-0.15, 0.85, 1.7],
-                [0.085, 0.8, 2.45],
+                [-0.45, 0.7, 2.45],
                 [-0.3, 0.85, 1.7],
-                [-0.05, 0.8, 2.45],
             ]
 
         # if train_or_test == "train":
         #     object_positions = [
         #         [0.1, 0.9, 2.45],
-        #         [-0.45, 0.8, 2.45],
-        #         [0.085, 0.8, 2.45],
-        #         [-0.55, 0.8, 2.45],
-        #         [-0.05, 0.8, 2.45],
+        #         [0.085, 0.7, 2.45],
+        #         [-0.15, 0.85, 1.7],
+        #         [-0.05, 0.7, 2.45],
+        #         [-0.3, 0.85, 1.7],
         #     ]
         # else:
         #     object_positions = [
         #         [0.1, 0.9, 2.45],
-        #         [-0.45, 0.8, 2.45],
-        #         [0.085, 0.8, 2.45],
-        #         [-0.55, 0.8, 2.45],
-        #         [-0.05, 0.8, 2.45],
+        #         [0.085, 0.7, 2.45],
+        #         [-0.15, 0.85, 1.7],
+        #         [-0.05, 0.7, 2.45],
+        #         [-0.3, 0.85, 1.7],
         #     ]
             # object_positions = [
             #     # [-0.8, 0.7, 1.7], # Microwave
@@ -1289,7 +1289,7 @@ README of that repo suggests!"
             # if obj.name in ("hinge1", "hinge2"):
             #     return state.get(obj, "angle") > cls.hinge_open_thresh    # Changed for opening hinge2
             if obj.name in ("hinge2"):
-                return state.get(obj, "x") > -0.22
+                return state.get(obj, "x") < -0.65
             if obj.name == "microhandle":
                 return state.get(obj, "x") < cls.microhandle_open_thresh - thresh_pad
             return state.get(obj, "x") > cls.slide_open_thresh + thresh_pad
@@ -1591,7 +1591,7 @@ README of that repo suggests!"
     def _IsSlide_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """TEMPORARY HARDCODE: Check if container is microhandle (container where objects are found)."""
         container = objects[0]
-        return container.name == "microhandle"
+        return container.name == "hinge2"
 
 
     # @classmethod
