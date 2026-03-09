@@ -35,10 +35,17 @@ class OracleRefinementEstimator(BaseRefinementEstimator):
                                                 skeleton, atoms_sequence)
 
         if env_name == "kitchen":
-            # Calculate probabilities for four regions based on object positions (mug, tea, sponge for clean_mug/make_tea)
-            region_probs = calculate_kitchen_region_probs(self._env, initial_task.init)
-            return kitchen_oracle_estimator(self._env, initial_task.init,
-                                            skeleton, atoms_sequence, region_probs)
+            # Per-object region probabilities, computed from per-object results_*.txt
+            region_probs_by_obj = calculate_kitchen_region_probs_by_object(
+                self._env, initial_task.init)
+            # Fallback combined probabilities (from merged results.txt) for
+            # objects that do not have individual distributions.
+            region_probs_default = calculate_kitchen_region_probs(
+                self._env, initial_task.init)
+            return kitchen_oracle_estimator_per_object(
+                self._env, initial_task.init,
+                skeleton, atoms_sequence,
+                region_probs_by_obj, region_probs_default)
 
         # Given environment doesn't have an implemented oracle estimator
         raise NotImplementedError(
@@ -113,33 +120,26 @@ def define_kitchen_regions() -> Dict[str, Dict]:
     """
     regions = {
         'microwave': {
-            'x_range': (-0.95, -0.85),
-            'y_range': (0.65, 0.85),
-            'z_range': (1.7, 1.7),  # Fixed z coordinate
+            'x_range': (-0.4, -0.1),
+            'y_range': (0.8, 0.95),
+            'z_range': (1.65, 1.65),  # Fixed z coordinate
             'xy_tolerance': 0.05,  # Tolerance for x and y coordinates
             'z_tolerance': 0.15  # Tolerance for z coordinate
         },
         'right_hinge_cabinet': {
-            'x_range': (-0.5, -0.35),
-            'y_range': (0.85, 1.2),
+            'x_range': (-0.5, -0.3),
+            'y_range': (0.7, 0.8),
             'z_range': (2.45, 2.45),
             'xy_tolerance': 0.05,
             'z_tolerance': 0.15
         },
         'slide_cabinet': {
-            'x_range': (0.075, 0.2),
-            'y_range': (0.85, 1.2),
+            'x_range': (-0.05, 0.23),
+            'y_range': (0.7, 0.8),
             'z_range': (2.45, 2.45),
             'xy_tolerance': 0.05,
             'z_tolerance': 0.15
         },
-        'tabletop': {
-            'x_range': (-0.55, 0.3),
-            'y_range': (0.85, 1.2),
-            'z_range': (1.626, 1.626),
-            'xy_tolerance': 0.05,
-            'z_tolerance': 0.15
-        }
     }
     return regions
 
@@ -174,8 +174,9 @@ def point_in_region(point: tuple, region: Dict) -> bool:
 def load_object_coordinates(file_path: str = None) -> List[tuple]:
     """
     Load object coordinates from results.txt file.
-    Used for clean_mug and make_tea tasks: positions are for mug, tea, sponge
-    (sampled from models in models/tea_single_objects).
+    用于 kitchen 任务的物体位置统计。当前场景中有 5 个物体：
+    mug, sponge, tea, milk, banana（banana 暂不用于任务），
+    这些坐标由 diffusion 模型生成（模型路径在 models/tea_single_objects_new 下）。
     
     Args:
         file_path: Path to results.txt file. If None, uses default path.
@@ -230,6 +231,34 @@ def load_object_coordinates(file_path: str = None) -> List[tuple]:
     return coordinates
 
 
+def load_object_coordinates_for_object(obj_name: str) -> List[tuple]:
+    """Load object coordinates from a per-object results file.
+
+    Expected filenames (searched in several locations), e.g.:
+        predicators/test_datapoint/results_mug.txt
+        predicators/test_datapoint/results_sponge.txt
+    """
+    suffix = f"results_{obj_name}.txt"
+    possible_paths = [
+        # Relative to this file: predicators/predicators/refinement_estimators/../test_datapoint
+        Path(__file__).parent.parent.parent / "test_datapoint" / suffix,
+        # Relative to workspace root
+        Path("predicators") / "test_datapoint" / suffix,
+        # Absolute path from workspace root guessing
+        Path(__file__).parent.parent.parent.parent / "predicators" / "test_datapoint" / suffix,
+    ]
+
+    file_path: Path | None = None
+    for path in possible_paths:
+        if path.exists():
+            file_path = path
+            break
+    if file_path is None:
+        return []
+
+    return load_object_coordinates(str(file_path))
+
+
 def calculate_kitchen_region_probs(env: BaseEnv, initial_state: State) -> Dict[str, float]:
     """
     Calculate probabilities for four regions based on object positions from results.txt.
@@ -244,7 +273,7 @@ def calculate_kitchen_region_probs(env: BaseEnv, initial_state: State) -> Dict[s
         initial_state: Initial state (unused, kept for compatibility)
         
     Returns:
-        Dictionary with keys: 'microwave', 'right_hinge_cabinet', 'slide_cabinet', 'tabletop'
+        Dictionary with keys: 'microwave', 'right_hinge_cabinet', 'slide_cabinet'
         Values are probabilities (0.0 to 1.0) representing the percentage of object
         positions in each region
     """
@@ -254,10 +283,9 @@ def calculate_kitchen_region_probs(env: BaseEnv, initial_state: State) -> Dict[s
     if not coordinates:
         # If no coordinates found, return uniform probabilities
         return {
-            'microwave': 0.25,
-            'right_hinge_cabinet': 0.25,
-            'slide_cabinet': 0.25,
-            'tabletop': 0.25
+            'microwave': 1/3,
+            'right_hinge_cabinet': 1/3,
+            'slide_cabinet': 1/3,
         }
     
     # Define regions
@@ -268,7 +296,6 @@ def calculate_kitchen_region_probs(env: BaseEnv, initial_state: State) -> Dict[s
         'microwave': 0,
         'right_hinge_cabinet': 0,
         'slide_cabinet': 0,
-        'tabletop': 0
     }
     
     total_points = len(coordinates)
@@ -304,33 +331,89 @@ def calculate_kitchen_region_probs(env: BaseEnv, initial_state: State) -> Dict[s
     return region_probs
 
 
-def kitchen_oracle_estimator(
+def calculate_kitchen_region_probs_for_object(obj_name: str) -> Dict[str, float]:
+    """Calculate region probabilities for a single object type.
+
+    Uses per-object coordinates loaded from results_<obj_name>.txt.
+    """
+    coordinates = load_object_coordinates_for_object(obj_name)
+    if not coordinates:
+        # If no coordinates for this object, return empty dict to signal missing.
+        return {}
+
+    regions = define_kitchen_regions()
+    region_counts = {
+        "microwave": 0,
+        "right_hinge_cabinet": 0,
+        "slide_cabinet": 0,
+    }
+
+    total_points = len(coordinates)
+    for point in coordinates:
+        for region_name, region in regions.items():
+            if point_in_region(point, region):
+                region_counts[region_name] += 1
+                break
+
+    region_probs: Dict[str, float] = {}
+    for region_name, count in region_counts.items():
+        region_probs[region_name] = count / total_points if total_points > 0 else 0.0
+
+    total_prob = sum(region_probs.values())
+    if total_prob > 0:
+        for k in region_probs:
+            region_probs[k] /= total_prob
+    return region_probs
+
+
+def calculate_kitchen_region_probs_by_object(
+    env: BaseEnv, initial_state: State
+) -> Dict[str, Dict[str, float]]:
+    """Compute per-object region probabilities from per-object results files.
+
+    Returns:
+        {
+          "mug": {"microwave": p1, "right_hinge_cabinet": p2, "slide_cabinet": p3},
+          "sponge": {...},
+          ...
+        }
+    """
+    del env, initial_state  # unused (kept for interface compatibility)
+
+    # Objects we might care about in kitchen tasks.
+    candidate_objects = ["banana", "mug", "sponge", "tea", "milk"]
+    region_probs_by_obj: Dict[str, Dict[str, float]] = {}
+    for obj_name in candidate_objects:
+        probs = calculate_kitchen_region_probs_for_object(obj_name)
+        if probs:
+            region_probs_by_obj[obj_name] = probs
+
+    return region_probs_by_obj
+
+
+def kitchen_oracle_estimator_per_object(
     env: BaseEnv,
     initial_state: State,
     skeleton: List[_GroundNSRT],
     atoms_sequence: List[Set[GroundAtom]],
-    region_probs: Dict[str, float],
+    region_probs_by_obj: Dict[str, Dict[str, float]],
+    region_probs_default: Dict[str, float],
 ) -> float:
-    """Oracle refinement estimation function for kitchen env.
-    
-    Applies self-loop determinization formula to observe-related actions:
-    ĉ = c_a + (c'_a / p_a - c'_a)
-    
-    With the assumption c_a = c'_a = C (success and failure costs are equal):
-    ĉ = C / p_a
-    
-    Where p_a is the success probability of finding the target object (mug, tea, sponge) in a container.
-    
-    Args:
-        env: Kitchen environment instance
-        initial_state: Initial state
-        skeleton: List of ground NSRTs
-        atoms_sequence: List of atom sets
-        region_probs: Dictionary mapping region names to probabilities
-                     Keys: 'microwave', 'right_hinge_cabinet', 'slide_cabinet', 'tabletop'
+    """Oracle refinement estimation for kitchen with per-object region probs.
+
+    For each observe sequence
+        MoveToPreTurnOn(container) -> PushOpen/PushOpenHingeDoor(container) -> ObserveContainer(...)
+    we try to infer which object (mug/sponge/tea/milk/banana) is being searched
+    next in the NSRT plan, and use that object's region probabilities when
+    applying the self-loop determinization formula:
+
+        ĉ = C / p(obj, container)
+
+    If we cannot infer the object or there is no per-object distribution for it,
+    we fall back to region_probs_default (computed from merged results.txt).
     """
-    del atoms_sequence  # unused for now
-    
+    del atoms_sequence, initial_state  # currently unused
+
     # Container names that can be observed
     container_names = {"hinge2", "slide", "microhandle"}
     
@@ -347,8 +430,8 @@ def kitchen_oracle_estimator(
     BASE_COST_OBSERVE = 0.0  # Observe cost is set to 0
     BASE_COST_OTHER = 1.0
     
-    # Default success probability if container not found in mapping
-    DEFAULT_SUCCESS_PROBABILITY = 1.0 / 4.0  # Assuming 4 containers initially
+    # Default success probability if container or region missing
+    DEFAULT_SUCCESS_PROBABILITY = 1.0 / 3.0  # Assuming 3 containers initially
     
     # Small epsilon to avoid division by zero
     EPSILON = 1e-6
@@ -409,11 +492,60 @@ def kitchen_oracle_estimator(
                         # c_a = c'_a = C (success and failure costs are equal)
                         # ĉ = C / p_a
                         base_cost = move_cost + open_cost + observe_cost
-                        
-                        # Get success probability for this container from region_probs
+
+                        # Try to infer which object this observe sequence is for,
+                        # by looking ahead in the NSRT plan for a per-object NSRT.
+
+                        def _infer_target_object_name(start_idx: int) -> str | None:
+                            """Look ahead from start_idx to infer which object is searched.
+
+                            We inspect subsequent NSRT names to find the first
+                            one that is clearly tied to a specific grippable
+                            object (mug/sponge/tea/milk/banana).
+                            """
+                            name_to_obj = {
+                                # Banana
+                                "MoveToPrePickUpBanana": "banana",
+                                "PickBanana": "banana",
+                                "MoveToTargetBanana": "banana",
+                                # Mug
+                                "MoveToPrePickUpMug": "mug",
+                                "PickMug": "mug",
+                                "MoveToTargetMug": "mug",
+                                "PlaceMugInSink": "mug",
+                                # Sponge
+                                "MoveToPrePickUpSponge": "sponge",
+                                "PickSponge": "sponge",
+                                "MoveToTargetSponge": "sponge",
+                                "WashMug": "sponge",
+                                # Tea
+                                "MoveToPrePickUpTea": "tea",
+                                "PickTea": "tea",
+                                "MoveToTargetTea": "tea",
+                                "MakeTea": "tea",
+                            }
+                            for k in range(start_idx + sequence_length, len(skeleton)):
+                                nm = skeleton[k].name
+                                if nm in name_to_obj:
+                                    return name_to_obj[nm]
+                            return None
+
+                        target_obj_name = _infer_target_object_name(i)
+
+                        # Select the appropriate region_probs for this object,
+                        # with fallback to default merged probabilities.
+                        if target_obj_name and target_obj_name in region_probs_by_obj:
+                            per_obj_region_probs = region_probs_by_obj[target_obj_name]
+                        else:
+                            per_obj_region_probs = region_probs_default
+
+                        # Get success probability for this container from the
+                        # (possibly per-object) region_probs.
                         if container_name in container_to_region:
                             region_name = container_to_region[container_name]
-                            success_prob = region_probs.get(region_name, DEFAULT_SUCCESS_PROBABILITY)
+                            success_prob = per_obj_region_probs.get(
+                                region_name, DEFAULT_SUCCESS_PROBABILITY
+                            )
                         else:
                             success_prob = DEFAULT_SUCCESS_PROBABILITY
                         

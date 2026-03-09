@@ -135,8 +135,8 @@ def save_current_view(env, rgb_path: str | Path, depth_path: str | Path) -> None
     # Depth viewer
     renderer._get_viewer("depth_array").vopt.geomgroup[2] = 0
 
-    rgb = renderer.render(render_mode="rgb_array", camera_name="third_cap")
-    depth = renderer.render(render_mode="depth_array", camera_name="third_cap")
+    rgb = renderer.render(render_mode="rgb_array", camera_name="fourth_cap")
+    depth = renderer.render(render_mode="depth_array", camera_name="fourth_cap")
 
     renderer._get_viewer("rgb_array").vopt.geomgroup[2] = 1
     renderer._get_viewer("depth_array").vopt.geomgroup[2] = 1
@@ -163,9 +163,10 @@ def set_joint(env: KitchenEnv, joint_name: str, value):
 def get_container_position_range(container_name: str) -> Tuple[float, float, float, float, float, float]:
     """get the position range of the container (x_min, x_max, y_min, y_max, z_min, z_max)"""
     ranges = {
-        'microwave': (-0.95, -0.85, 0.65, 0.85, 1.7, 1.7),
-        'right_hinge_cabinet': (-0.5, -0.35, 0.85, 1.2, 2.45, 2.45),
-        'slide_cabinet': (0.075, 0.2, 0.85, 1.2, 2.45, 2.45),
+        # 新范围：x, y, z 保持原高度
+        'microwave': (-0.4, -0.1, 0.8, 0.95, 1.65, 1.65),
+        'right_hinge_cabinet': (-0.5, -0.3, 0.7, 0.8, 2.45, 2.45),
+        'slide_cabinet': (-0.05, 0.23, 0.7, 0.8, 2.45, 2.45),
     }
     return ranges[container_name]
 
@@ -198,13 +199,13 @@ def get_container_for_position(pos: List[float]) -> Optional[str]:
     x, y, z = pos
     
     # check if in microwave
-    if -0.95 <= x <= -0.85 and 0.65 <= y <= 0.85 and abs(z - 1.7) < 0.1:
+    if -0.4 <= x <= -0.1 and 0.8 <= y <= 0.95 and abs(z - 1.65) < 0.1:
         return 'microwave'
     # check if in right_hinge_cabinet
-    elif -0.5 <= x <= -0.35 and 0.85 <= y <= 1.2 and abs(z - 2.45) < 0.1:
+    elif -0.5 <= x <= -0.3 and 0.7 <= y <= 0.8 and abs(z - 2.45) < 0.1:
         return 'right_hinge_cabinet'
     # check if in slide_cabinet
-    elif 0.075 <= x <= 0.2 and 0.85 <= y <= 1.2 and abs(z - 2.45) < 0.1:
+    elif -0.05 <= x <= 0.23 and 0.7 <= y <= 0.8 and abs(z - 2.45) < 0.1:
         return 'slide_cabinet'
     
     return None
@@ -216,7 +217,7 @@ def is_container_open(env: KitchenEnv, container_name: str) -> bool:
         return qpos < -0.1  # door is open
     elif container_name == 'right_hinge_cabinet':
         qpos = mujoco_utils.get_joint_qpos(env._gym_env.model, env._gym_env.data, "right_hinge_cabinet")
-        return qpos > 0.1  # door is open
+        return qpos < -0.1  # door is open
     elif container_name == 'slide_cabinet':
         qpos = mujoco_utils.get_joint_qpos(env._gym_env.model, env._gym_env.data, "slide_cabinet")
         return qpos > 0.1  # door is open
@@ -324,11 +325,11 @@ cogman = CogMan(approach, perceiver, execution_monitor)
 seed = 42
 rng = np.random.default_rng(seed)
 
-# define the container position range
+# define the container position range (kept for potential future use)
 container_ranges = {
-    'microwave': {'x': (-0.95, -0.85), 'y': (0.65, 0.85), 'z': (1.7, 1.7)},
-    'right_hinge_cabinet': {'x': (-0.5, -0.35), 'y': (0.85, 1.2), 'z': (2.45, 2.45)},
-    'slide_cabinet': {'x': (0.075, 0.2), 'y': (0.85, 1.2), 'z': (2.45, 2.45)},
+    'microwave': {'x': (-0.4, -0.1), 'y': (0.8, 0.95), 'z': (1.65, 1.65)},
+    'right_hinge_cabinet': {'x': (-0.5, -0.3), 'y': (0.7, 0.8), 'z': (2.45, 2.45)},
+    'slide_cabinet': {'x': (-0.05, 0.23), 'y': (0.7, 0.8), 'z': (2.45, 2.45)},
 }
 
 # create the dataset directory
@@ -410,23 +411,23 @@ with open(mug_position_file, "w") as mug_pos_file, \
         if 'microwave' in containers_to_close:
             microwave_qpos = 0.0
         elif 'microwave' in {mug_container, milk_container, sponge_container, tea_container}:
-            microwave_qpos = rng.uniform(-0.75, -0.45)
+            microwave_qpos = rng.uniform(-0.9, -0.45)
         else:
-            microwave_qpos = rng.uniform(-0.75, -0.45) if rng.random() < 0.5 else 0.0
+            microwave_qpos = rng.uniform(-0.9, -0.45) if rng.random() < 0.5 else 0.0
 
         if 'right_hinge_cabinet' in containers_to_close:
             right_hinge_cabinet_qpos = 0.0
         elif 'right_hinge_cabinet' in {mug_container, milk_container, sponge_container, tea_container}:
-            right_hinge_cabinet_qpos = rng.uniform(0.8, 1.2)
+            right_hinge_cabinet_qpos = rng.uniform(-1.2, -0.8)
         else:
-            right_hinge_cabinet_qpos = rng.uniform(0.8, 1.2) if rng.random() < 0.5 else 0.0
+            right_hinge_cabinet_qpos = rng.uniform(-1.2, -0.8) if rng.random() < 0.5 else 0.0
 
         if 'slide_cabinet' in containers_to_close:
             slide_cabinet_qpos = 0.0
         elif 'slide_cabinet' in {mug_container, milk_container, sponge_container, tea_container}:
-            slide_cabinet_qpos = rng.uniform(0.25, 0.35)
+            slide_cabinet_qpos = rng.uniform(0.35, 0.55)
         else:
-            slide_cabinet_qpos = rng.uniform(0.25, 0.35) if rng.random() < 0.5 else 0.0
+            slide_cabinet_qpos = rng.uniform(0.35, 0.55) if rng.random() < 0.5 else 0.0
 
         set_joint(env, "microwave", microwave_qpos)
         set_joint(env, "right_hinge_cabinet", right_hinge_cabinet_qpos)
@@ -470,8 +471,9 @@ with open(mug_position_file, "w") as mug_pos_file, \
         milk_pos_file.write(f"{milk_pos[0]:.6f}, {milk_pos[1]:.6f}, {milk_pos[2]:.6f}\n")
         sponge_pos_file.write(f"{sponge_pos[0]:.6f}, {sponge_pos[1]:.6f}, {sponge_pos[2]:.6f}\n")
         tea_pos_file.write(f"{tea_pos[0]:.6f}, {tea_pos[1]:.6f}, {tea_pos[2]:.6f}\n")
-        cam_pos_file.write(f"{-0.85:.6f}, {-0.85:.6f}, {2.8:.6f}\n")
-        cam_rot_file.write(f"{1.1:.6f}, {-0.3:.6f}, {-0.1:.6f}\n")
+        # 摄像机位姿：pos='0.4 -0.6 2.8' euler='1.1 0.4 0.2'
+        cam_pos_file.write(f"{0.4:.6f}, {-0.6:.6f}, {2.8:.6f}\n")
+        cam_rot_file.write(f"{1.1:.6f}, {0.4:.6f}, {0.2:.6f}\n")
 
         # 写入遮挡记录：frame_id, 各物体遮挡, pattern, 三容器开/关(1=开 0=关)
         occ_mug = 1 if actual_status['mug'] else 0
@@ -479,7 +481,7 @@ with open(mug_position_file, "w") as mug_pos_file, \
         occ_sponge = 1 if actual_status['sponge'] else 0
         occ_tea = 1 if actual_status['tea'] else 0
         microwave_open = 1 if microwave_qpos < -0.1 else 0
-        right_hinge_cabinet_open = 1 if right_hinge_cabinet_qpos > 0.1 else 0
+        right_hinge_cabinet_open = 1 if right_hinge_cabinet_qpos < -0.1 else 0
         slide_cabinet_open = 1 if slide_cabinet_qpos > 0.1 else 0
         occ_file.write(
             f"frame_{frame_idx:06d}\t{occ_mug}\t{occ_milk}\t{occ_sponge}\t{occ_tea}\t{actual_pattern}\t"

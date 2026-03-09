@@ -634,6 +634,7 @@ class GlobalSettings:
     # refinement data collection parameters
     refinement_data_num_skeletons = 8
     refinement_data_skeleton_generator_timeout = 20
+    # refinement_data_skeleton_generator_timeout = 60
     refinement_data_low_level_search_timeout = 5  # timeout for refinement try
     refinement_data_failed_refinement_penalty = 5  # added time on failure
     refinement_data_include_execution_cost = True

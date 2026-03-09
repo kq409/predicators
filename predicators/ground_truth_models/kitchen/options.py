@@ -715,7 +715,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             elif objects[1].name == "microhandle":
                 if memory["flag"] == 0:
                     print(f"flag: {memory['flag']}")
-                    if gx <= -0.075:
+                    if gx <= -0.06:
                         memory["flag"] = 1
                         print("set flag to 1")
                         memory["waypoints"] = [
@@ -944,6 +944,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             
             # Key: set object.found status based on actual situation
             # Also update environment level status and state variable
+            print(f"found_mug: {found_mug}")
             banana_name = banana.name if hasattr(banana, 'name') else "banana"
             KitchenEnv.set_banana_found(banana_name, found_banana)
             mug_name = mug.name if hasattr(mug, 'name') else "mug"
@@ -975,6 +976,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _MoveToPrePickUp_initiable(state: State, memory: Dict,
                                        objects: Sequence[Object],
                                        params: Array) -> bool:
+            from predicators.approaches import create_approach, ApproachTimeout, ApproachFailure
             gripper, obj, obj_place = objects
             gx = state.get(gripper, "x")
             gy = state.get(gripper, "y")
@@ -994,6 +996,11 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             target_pose = (ox + dx, oy + dy, oz + dz)
             current_quat = (gqw, gqx, gqy, gqz)
             home_x, home_y, home_z = cls.home_pos
+
+            obj_found = KitchenEnv._ObjectFound_holds(state, [obj])
+            if not obj_found:
+                print(f"obj not found: {obj.name}")
+                raise ApproachFailure(f"plan exhausted")
 
             init_quat = current_quat
             if obj.is_instance(banana_type):
@@ -1040,10 +1047,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                     target_quat = angled_quat
                     memory["waypoints"] = [
                         ((gx, gy - 0.10, gz - 0.15), current_quat),
-                        ((home_x, home_y, home_z), angled_quat),
+                        ((home_x - 0.2, home_y, home_z), angled_quat),
 
                         # ((ox + dx - 0.05, oy + dy - 0.25, oz + dz - 0.1), angled_quat),
-                        ((ox + dx + 0.1, oy + dy - 0.2, oz + dz), fwd_quat),
+                        ((ox + dx - 0.1, oy + dy - 0.3, oz + dz), fwd_quat),
                         ((ox + dx, oy + dy, oz + dz), angled_quat),
                         (target_pose, angled_quat),
                     ]

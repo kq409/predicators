@@ -89,7 +89,8 @@ class RefinementEstimationApproach(OracleApproach):
     ) -> Tuple[List[_GroundNSRT], List[Set[GroundAtom]], Metrics]:
         """Generates a plan choosing the best skeletons based on a given
         refinement cost estimator when using task planning only (without sim)."""
-        from predicators.planning import task_plan_grounding, task_plan
+        from predicators.planning import task_plan_grounding, task_plan, \
+            _SkeletonSearchTimeout
         from predicators import utils as pred_utils
         from predicators.settings import CFG
         from itertools import islice
@@ -117,11 +118,24 @@ class RefinementEstimationApproach(OracleApproach):
             max_skeletons_optimized=CFG.refinement_estimation_num_skeletons_generated,
             use_visited_state_set=True)
         
-        # Collect proposed skeletons
+        # Collect proposed skeletons. If skeleton search times out AFTER at
+        # least one skeleton has been yielded, treat it as "no more skeletons"
+        # instead of a hard failure.
         proposed_skeletons = []
-        for skeleton_data in islice(gen, CFG.refinement_estimation_num_skeletons_generated):
-            proposed_skeletons.append(skeleton_data)
-        
+        try:
+            for skeleton_data in islice(
+                gen, CFG.refinement_estimation_num_skeletons_generated
+            ):
+                proposed_skeletons.append(skeleton_data)
+            print("Skeletons generated successfully")
+        except _SkeletonSearchTimeout:
+            if not proposed_skeletons:
+                # No skeletons at all: propagate failure to keep old behavior.
+                raise
+            # Otherwise, we already have some candidate skeletons; just stop
+            # collecting more and proceed with cost-based ranking.
+            print("Skeletons generation timed out")
+        print(f"Skeletons generated: {len(proposed_skeletons)}")
         if not proposed_skeletons:
             # If no skeletons generated, fall back to default behavior
             return super()._run_task_plan(task, nsrts, preds, timeout, seed, **kwargs)

@@ -484,8 +484,6 @@ README of that repo suggests!"
             Predicate("MugWashed", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
             Predicate("TeaInSink", [cls.tea_type, cls.object_type], cls._OnTop_holds),
             Predicate("TeaMade", [cls.tea_type, cls.object_type], cls._OnTop_holds),
-            # TEMPORARY HARDCODE: Predicate to identify slide container
-            Predicate("IsSlide", [cls.hinge_door_type], cls._IsSlide_holds),
         }
 
         return {p.name: p for p in preds}
@@ -1087,36 +1085,36 @@ README of that repo suggests!"
         # New objects position setting
         if train_or_test == "train":
             object_positions = [
-                [0.1, 0.9, 2.45],
-                [-0.3, 0.7, 2.45],
+                [0.0, 0.0, 0.0],
+                [-0.3, 0.82, 1.7],
                 [-0.15, 0.85, 1.7],
-                [-0.45, 0.7, 2.45],
-                [-0.3, 0.85, 1.7],
+                [-0.4, 0.7, 2.45],
+                [-0.1, 0.85, 1.7],
             ]
         else:
             object_positions = [
-                [0.1, 0.9, 2.45],
-                [-0.3, 0.7, 2.45],
+                [0.0, 0.0, 0.0],
+                [-0.3, 0.82, 1.7],
                 [-0.15, 0.85, 1.7],
-                [-0.45, 0.7, 2.45],
-                [-0.3, 0.85, 1.7],
+                [-0.4, 0.7, 2.45],
+                [-0.1, 0.85, 1.7],
             ]
 
         # if train_or_test == "train":
         #     object_positions = [
         #         [0.1, 0.9, 2.45],
-        #         [0.085, 0.7, 2.45],
-        #         [-0.15, 0.85, 1.7],
-        #         [-0.05, 0.7, 2.45],
-        #         [-0.3, 0.85, 1.7],
+                # [-0.15, 0.7, 1.7],
+                # [-0.3, 0.85, 2.45],
+                # [-0.4, 0.7, 1.7],
+                # [-0.45, 0.85, 2.45],
         #     ]
         # else:
         #     object_positions = [
         #         [0.1, 0.9, 2.45],
-        #         [0.085, 0.7, 2.45],
-        #         [-0.15, 0.85, 1.7],
-        #         [-0.05, 0.7, 2.45],
-        #         [-0.3, 0.85, 1.7],
+                # [-0.15, 0.7, 1.7],
+                # [-0.3, 0.85, 2.45],
+                # [-0.4, 0.7, 1.7],
+                # [-0.45, 0.85, 2.45],
         #     ]
             # object_positions = [
             #     # [-0.8, 0.7, 1.7], # Microwave
@@ -1424,7 +1422,7 @@ README of that repo suggests!"
         ])
         
         # Get all container positions and calculate distances
-        all_containers = ["hinge1", "hinge2", "slide", "microhandle"]
+        all_containers = ["hinge2", "slide", "microhandle"]
         container_distances = {}
         
         for container_name in all_containers:
@@ -1533,44 +1531,9 @@ README of that repo suggests!"
     @classmethod
     def _MugFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if mug has been found. 
-        
-        TEMPORARY HARDCODE: Only allow mug to be found in microhandle container.
+
         """
-        obj = objects[0]
-        obj_name = obj.name if hasattr(obj, 'name') else ""
-        
-        # TEMPORARY HARDCODE: Only check microhandle container for mug
-        gripper = cls.object_name_to_object("gripper")
-        microhandle_container = cls.object_name_to_object("microhandle")
-        
-        # First check state variable object.found (set by ObserveContainer option)
-        try:
-            found_in_state = state.get(obj, "found")
-            if found_in_state:
-                # Verify that microhandle container was observed (mug can only be found in microhandle)
-                microhandle_observed = cls._Observed_holds(state, [microhandle_container])
-                if microhandle_observed:
-                    return True
-        except (ValueError, KeyError):
-            pass
-        
-        # Second check environment level status
-        if obj_name in cls._grippable_object_found_status:
-            found_status = cls._grippable_object_found_status[obj_name]
-            if found_status:
-                # Verify that microhandle container was observed
-                microhandle_observed = cls._Observed_holds(state, [microhandle_container])
-                if microhandle_observed:
-                    return True
-        
-        # Backward compatibility: check if microhandle container contains mug AND has been observed
-        microhandle_observed = cls._Observed_holds(state, [microhandle_container])
-        contains_mug = cls._ContainsMug_holds(state, [gripper, microhandle_container])
-        
-        if contains_mug and microhandle_observed:
-            return True
-        
-        return False
+        return cls._ObjectFound_holds(state, objects)
 
     @classmethod
     def _BananaFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -1586,13 +1549,6 @@ README of that repo suggests!"
     def _TeaFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if tea has been found. Delegates to _ObjectFound_holds."""
         return cls._ObjectFound_holds(state, objects)
-
-    @classmethod
-    def _IsSlide_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        """TEMPORARY HARDCODE: Check if container is microhandle (container where objects are found)."""
-        container = objects[0]
-        return container.name == "hinge2"
-
 
     # @classmethod
     # def _CanObserve_holds(cls, state: State, objects: Sequence[Object]) -> bool:

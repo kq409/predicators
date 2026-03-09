@@ -11,6 +11,7 @@ from predicators.pybullet_helpers.geometry import Pose3D
 from predicators.structs import Action, Array, GroundAtom, Object, \
     ParameterizedOption, ParameterizedTerminal, Predicate, State, Type
 
+
 import sys
 
 
@@ -30,7 +31,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
     min_delta_mag: ClassVar[float] = 0.4  # don't move less than this per step
     max_push_mag: ClassVar[float] = 0.05  # for pushing forward
     # A reasonable home position for the end effector.
-    home_pos: ClassVar[Pose3D] = (0.0, 0.37, 2.1)
+    home_pos: ClassVar[Pose3D] = (-0.2, 0.37, 2.1)
     # Keep pushing a bit even if the On classifier holds.
     push_lr_thresh_pad: ClassVar[float] = 0.02
     push_microhandle_thresh_pad: ClassVar[float] = 0.02
@@ -57,6 +58,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         slide_pick_quat = euler2quat((-3 * np.pi / 4, 0.0, -np.pi))
         pick_up_quat = euler2quat((-np.pi, 0.0, -np.pi))
         prepullhinge_quat = euler2quat((-np.pi / 2, -np.pi / 8, -np.pi / 2))
+        
+        prepullmicro_quat = euler2quat((-np.pi / 2, 0.0, (-np.pi / 2 - 0.3)))
 
         # Types
         gripper_type = types["gripper"]
@@ -125,10 +128,12 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             elif obj.name == "microhandle":
                 target_quat = angled_quat
                 memory["waypoints"] = [
-                    ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
+                    # ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
                     (cls.home_pos, init_quat),
-                    ((ox + dx, oy + dy - 0.3, oz + 0.1), target_quat),
-                    (target_pose, fwd_quat),
+                    ((ox + dx - 0.3, oy + dy - 0.1, oz + 0.2), prepullmicro_quat),
+                    # ((ox + dx - 0.2, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
+                    ((ox + dx, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
+                    (target_pose, prepullmicro_quat),
                 ]
                 print(f"Moves away from handle to prevent collision.")
             elif obj.name == "slide":
@@ -136,7 +141,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 memory["waypoints"] = [
                     ((gx, gy - 0.10, gz), current_quat),
                     ((gx, gy - 0.15, gz), down_quat),
-                    ((0.2, 0.5, 2.1), init_quat),
+                    (cls.home_pos, init_quat),
                     (target_pose, target_quat),
                     ]
                 print(f"MoveTo slide waypoints: {memory['waypoints']}")
@@ -182,7 +187,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
             if len(objects) == 2:
                 # tol = cls.moveto_tol
-                tol = 0.02
+                tol = 0.015
             elif len(objects) == 3:
                 tol = 0.05
             else:
@@ -202,13 +207,26 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 grip = 1.0
             else:
                 grip = 0.0
-            arr = np.array([dx, dy, dz, droll, dpitch, dyaw, grip],
-                           dtype=np.float32)
-            action_mag = np.linalg.norm(arr)
-            if action_mag > cls.max_delta_mag:
-                scale = cls.max_delta_mag / action_mag
-                arr = arr * scale
-            # print(f"Action magnitude: {np.linalg.norm(arr)}")
+
+            if len(objects) == 3:
+                # For len(objects) == 3, normalize the motion part separately
+                motion_arr = np.array([dx, dy, dz, droll, dpitch, dyaw],
+                                      dtype=np.float32)
+                action_mag = np.linalg.norm(motion_arr)
+                if action_mag > cls.max_delta_mag:
+                    scale = cls.max_delta_mag / action_mag
+                    motion_arr = motion_arr * scale
+                arr = np.concatenate(
+                    [motion_arr, np.array([grip], dtype=np.float32)])
+            else:
+                arr = np.array([dx, dy, dz, droll, dpitch, dyaw, grip],
+                               dtype=np.float32)
+                action_mag = np.linalg.norm(arr)
+                if action_mag > cls.max_delta_mag:
+                    scale = cls.max_delta_mag / action_mag
+                    arr = arr * scale
+            print(f"Action magnitude: {np.linalg.norm(arr)}")
+            print(f"Action: {arr}")
             return Action(arr)
 
         def _MoveTo_terminal(state: State, memory: Dict,
@@ -217,8 +235,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             # Change the tolerance for different objects
             gripper, obj = objects[0], objects[1]
             if obj.name == "microhandle":
-                # tol = 0.02
-                tol = 0.03
+                tol = 0.015
+                # tol = 0.01
             elif obj.name == "hinge2":
                 tol = 0.03
             elif obj.name == "slide":
@@ -643,7 +661,29 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _PushOpen_initiable(state: State, memory: Dict,
                                 objects: Sequence[Object],
                                 params: Array) -> bool:
-            # No hardcoded microwave state; always initiable.
+            
+            gripper = objects[0]
+            obj = objects[1]
+            gx, gy, gz = state.get(gripper, "x"), state.get(gripper, "y"), state.get(gripper, "z")
+            memory["current_pose"] = (gx, gy, gz)
+            if obj.name == "microhandle":
+                memory["target_quat"] = prepullmicro_quat
+                memory["waypoints"] = [
+                    ((gx + 0.1, gy - 0.2, gz), prepullmicro_quat),
+                    ((gx + 0.1, gy - 0.05, gz), prepullmicro_quat),
+                    # ((gx, gy, gz), prepullmicro_quat),
+                ]
+                print(f"waypoints: {memory['waypoints']}")
+                memory["flag"] = 0
+            elif obj.name == "hinge2":
+                memory["target_quat"] = prepullhinge_quat
+            elif obj.name == "slide":
+                memory["target_quat"] = angled_quat
+            # if obj.name == "microhandle":
+            #     env = getattr(KitchenEnv, "_current_env", None)
+            #     if env is not None:
+            #         env.set_joint("microwave", -1.57)
+            #         print("Set microwave qpos to -1.57)")
             return True
 
         def _PushOpen_policy(state: State, memory: Dict,
@@ -653,18 +693,84 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             push_angle = params[0]
             gripper = objects[0]
             gx, gy, gz = state.get(gripper, "x"), state.get(gripper, "y"), state.get(gripper, "z")
+            gqw = state.get(gripper, "qw")
+            gqx = state.get(gripper, "qx")
+            gqy = state.get(gripper, "qy")
+            gqz = state.get(gripper, "qz")
+            current_euler = quat2euler([gqw, gqx, gqy, gqz])
+            target_quat = memory["target_quat"]
+            target_euler = quat2euler(target_quat)
+            droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+            _, _, dz = np.subtract((gx, gy, gz), memory["current_pose"])
+            # print(f"droll: {droll}, dpitch: {dpitch}, dyaw: {dyaw}")
+            print(f"gx, gy, gz: {gx}, {gy}, {gz}")
 
             if objects[1].name == "hinge2":
                 unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
                 dx = unit_x * cls.max_push_mag / 2.0
                 dy = unit_y * cls.max_push_mag / 2.0
                 arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)
-            else:
+                hinge2_x = state.get(objects[1], "x")
+                print(f"hinge2 angle: {hinge2_x}")
+            elif objects[1].name == "microhandle":
+                if memory["flag"] == 0:
+                    print(f"flag: {memory['flag']}")
+                    if gx <= -0.075:
+                        memory["flag"] = 1
+                        print("set flag to 1")
+                        memory["waypoints"] = [
+                            ((gx + 0.1, gy - 0.1, gz), prepullmicro_quat),
+                        ] + memory["waypoints"]
+                        arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                dtype=np.float32)
+                    else:
+                        unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
+                        dx = unit_x * cls.max_push_mag / 2.0
+                        dy = unit_y * cls.max_push_mag / 2.0
+                        arr = np.array([dx, dy, -0.01, droll, dpitch, dyaw, -1.0],
+                                dtype=np.float32)
+                elif memory["flag"] == 1:
+                    print(f"flag: {memory['flag']}")
+                    if np.allclose((gx, gy, gz), memory["waypoints"][-1][0], atol=0.0125):
+                        memory["flag"] = 2
+                        print("set flag to 2")
+                        arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                dtype=np.float32)
+                    else:
+                        way_pos, way_quat = memory["waypoints"][0]
+                        if np.allclose((gx, gy, gz), way_pos, atol=0.0125):
+                            memory["waypoints"].pop(0)
+                            way_pos, way_quat = memory["waypoints"][0]
+                        dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
+                        target_euler = quat2euler(way_quat)
+                        droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+                        arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
+                                dtype=np.float32)
+                        action_mag = np.linalg.norm(arr)
+                        if action_mag > cls.max_delta_mag:
+                            scale = cls.max_delta_mag / action_mag
+                            arr = arr * scale
+                        print(f"arr: {arr}")
+                    # else:
+                    #     dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
+                    #     target_euler = quat2euler(way_quat)
+                    #     droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+                    #     arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
+                    #             dtype=np.float32)
+                elif memory["flag"] == 2:
+                    print(f"flag: {memory['flag']}")
+                    push_angle = -7 * np.pi / 8
+                    unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
+                    dx = unit_x * cls.max_push_mag / 2.0
+                    dy = unit_y * cls.max_push_mag / 2.0
+                    arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0],
+                            dtype=np.float32)
+            elif objects[1].name == "slide":
                 unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
                 dx = unit_x * cls.max_push_mag / 2.0
                 dy = unit_y * cls.max_push_mag / 2.0
-                arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0],
-                            dtype=np.float32)
+                arr = np.array([dx, dy, 0.01, 0.0, 0.0, 0.0, -1.0],
+                                dtype=np.float32)
             
             # print(f"PushOpen action: {arr.tolist()}")
             # print(f"Object angle: {state.get(objects[1], 'angle')}")
@@ -681,7 +787,17 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             # Use a more stringent threshold to avoid numerical issues.
             is_open = KitchenEnv.Open_holds(
                 state, [obj], thresh_pad=cls.push_microhandle_thresh_pad)
-            # Do not hardcode microwave or cabinet joint positions here; rely on environment dynamics.
+            # When hinge2 (right_hinge_cabinet) is considered open, set qpos to 0.8
+            # if is_open and obj.name == "hinge2":
+            #     env = getattr(KitchenEnv, "_current_env", None)
+            #     if env is not None:
+            #         env.set_joint("right_hinge_cabinet", 1.5)
+            #         print("Set right_hinge_cabinet qpos to 1.5")
+            # if is_open and obj.name == "microhandle":
+            #     env = getattr(KitchenEnv, "_current_env", None)
+            #     if env is not None:
+            #         env.set_joint("microwave", -1.57)
+            #         print("Set microwave qpos to -1.57")
             return is_open
 
         PushOpen = ParameterizedOption(
@@ -923,20 +1039,25 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 elif obj_place.name == "hinge2":
                     target_quat = angled_quat
                     memory["waypoints"] = [
-                        ((home_x, home_y, home_z + 0.1), down_quat),
-                        ((home_x - 0.25, home_y - 0.25, home_z + 0.2), down_quat),
+                        ((gx, gy - 0.10, gz - 0.15), current_quat),
+                        ((home_x - 0.2, home_y, home_z), angled_quat),
+
                         # ((ox + dx - 0.05, oy + dy - 0.25, oz + dz - 0.1), angled_quat),
-                        ((ox + dx - 0.1, oy + dy - 0.35, oz + dz), fwd_quat),
+                        ((ox + dx - 0.1, oy + dy - 0.3, oz + dz), fwd_quat),
                         ((ox + dx, oy + dy, oz + dz), angled_quat),
                         (target_pose, angled_quat),
                     ]
                 elif obj_place.name == "microhandle":
                     target_quat = angled_quat
                     memory["waypoints"] = [
-                        ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
+                        # ((gx, gy - 0.15, gz + 0.3), down_quat),
+                        ((gx, gy - 0.1, gz + 0.1), down_quat),
                         (cls.home_pos, angled_quat),
+                        ((ox + dx + 0.15, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
                         ((ox + dx, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
-                        ((ox + dx, oy + dy, oz + dz), angled_quat),
+                        # ((ox + dx, oy + dy - 0.15, oz + dz + 0.05), angled_quat),
+                        # ((ox + dx, oy + dy - 0.05, oz + dz), angled_quat),
+                        # ((ox + dx, oy + dy, oz + dz), angled_quat),
                         (target_pose, angled_quat),
                     ]
                     print(f"obj_place: {obj_place.name}, obj: {obj.name}")
@@ -958,9 +1079,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             
             tol = 0.05
             if obj_place.name == "hinge2":
-                tol = 0.17
+                tol = 0.05
             elif obj_place.name == "microhandle":
-                tol = 0.2
+                # tol = 0.2
+                tol = 0.05
             
             # print(f"MoveToPreTurnOn Debug Info:")
             # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
@@ -1134,10 +1256,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 target_quat = angled_quat
                 memory["waypoints"] = [
                     ((gx, gy - 0.35, gz + 0.1), current_quat),
-                    ((home_x - 0.25, home_y - 0.25, home_z + 0.2), target_quat),
+                    ((home_x, home_y, home_z), current_quat),
                     # ((tx + dx, ty + dy, tz + dz), target_quat),
-                    ((tx, ty, tz + 0.1), target_quat),
-                    (target_pose, target_quat),
+                    ((tx, ty, tz + 0.1), current_quat),
+                    (target_pose, current_quat),
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             elif origin.name == "slide":
@@ -1161,7 +1283,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             elif origin.name == "microhandle":
                 target_quat = angled_quat
                 memory["waypoints"] = [
-                    ((gx, gy - 0.15, gz + 0.05), current_quat),
+                    ((gx, gy - 0.15, gz + 0.1), current_quat),
                     ((gx + 0.1, gy - 0.2, gz + 0.1), down_quat),
                     (cls.home_pos, init_quat),
                     ((tx, ty, tz + 0.1), current_quat),

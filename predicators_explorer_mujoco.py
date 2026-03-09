@@ -94,6 +94,7 @@ _captured_views_history = []
 _plan_counter = 0
 
 #Defining test configuration, and overriding some default ones:
+goal_name = "clean_mug"
 args = {
     "env": "kitchen",
     # "approach": "oracle",
@@ -102,9 +103,13 @@ args = {
     "use_gui": True,
     "num_test_tasks": 1,
     "kitchen_use_perfect_samplers": True,
-    # Tasks: clean_mug, make_tea (no banana-related tasks)
-    # "kitchen_goals": "clean_mug",
-    "kitchen_goals": "make_tea",
+    # Kitchen 任务类型:
+    #   - "clean_mug"
+    #   - "make_tea"
+    #   - "make_milktea"（需要在 kitchen.py / nsrts.py 中已接好）
+    # 这里只是设置默认值，真正的任务选择以 CFG.kitchen_goals 为准，
+    # 因此你可以在外部 config / 命令行里覆盖它。
+    "kitchen_goals": goal_name,
     "pybullet_sim_steps_per_action": 20,
     "pybullet_camera_width": 1674,
     "pybullet_camera_height": 900,
@@ -240,8 +245,8 @@ def save_current_view(env, rgb_path: str | Path, depth_path: str | Path) -> None
     # Depth viewer
     renderer._get_viewer("depth_array").vopt.geomgroup[2] = 0
 
-    rgb = renderer.render(render_mode="rgb_array", camera_name="third_cap")
-    depth = renderer.render(render_mode="depth_array", camera_name="third_cap")
+    rgb = renderer.render(render_mode="rgb_array", camera_name="fourth_cap")
+    depth = renderer.render(render_mode="depth_array", camera_name="fourth_cap")
 
     renderer._get_viewer("rgb_array").vopt.geomgroup[2] = 1
     renderer._get_viewer("depth_array").vopt.geomgroup[2] = 1
@@ -269,8 +274,8 @@ def load_camera_info_from_files(test_datapoint_dir: Path):
     cam_rotation_file = test_datapoint_dir / "camera_rotations.txt"
     
     # Default values (from create_dataset.py)
-    default_cam_pos = np.array([-0.85, -0.85, 2.8])
-    default_cam_rot = np.array([1.1, -0.3, -0.1])
+    default_cam_pos = np.array([0.4, -0.6, 2.8])
+    default_cam_rot = np.array([1.1, 0.4, 0.2])
     
     # Try to load from files
     cam_pos = default_cam_pos.copy()
@@ -372,12 +377,14 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
                          captured_views_history: list = None):
     """Generate results.txt by sampling 3D coordinates using diffusion model.
     
-    Uses network_tea_single_object: only RGB-D (image + depth) as input, no floor_plan/camera.
-    When captured_views_history is provided, uses the latest view only for sampling.
+    使用基于 RGB-D 的 diffusion 模型，从当前视角采样物体三维坐标。
+    当前场景中有 5 个物体：mug, sponge, tea, milk, banana（banana 暂不用于任务），
+    模型权重默认从 models/tea_single_objects_new/*/best_model.pth 中加载。
+    当 captured_views_history 提供时，只使用最新视角做采样。
     
     Args:
         test_datapoint_dir: Directory containing RGB and depth images
-        model_ckpt: Path to model checkpoint (models/tea_single_objects/*/best_model.pth)
+        model_ckpt: Path to model checkpoint (默认为 models/tea_single_objects_new/*/best_model.pth)
         n_sample: Number of samples to generate
         seed: Random seed
         captured_views_history: List of (cam_view_tensor, depth_tensor); if set, use last view
@@ -410,31 +417,6 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
     except ImportError as e:
         logging.warning(f"Could not import network_tea_single_object: {e}. Skipping results.txt generation.")
         return False
-    
-    # Default model checkpoint path: prefer models/tea_single_objects (clean_mug, make_tea tasks)
-    if model_ckpt is None:
-        workspace_root = Path(__file__).parent.parent.parent
-        possible_model_paths = [
-            # tea_single_objects: mug, tea, sponge (for clean_mug / make_tea)
-            workspace_root / "models" / "tea_single_objects" / "mug" / "best_model.pth",
-            workspace_root / "models" / "tea_single_objects" / "tea" / "best_model.pth",
-            workspace_root / "models" / "tea_single_objects" / "sponge" / "best_model.pth",
-            workspace_root / "models" / "tea_single_objects" / "milk" / "best_model.pth",
-            Path("models/tea_single_objects/mug/best_model.pth"),
-            Path("models/tea_single_objects/tea/best_model.pth"),
-            Path("models/mujoco/best_model.pth"),
-            Path("code/models/mujoco/best_model.pth"),
-            workspace_root / "models" / "mujoco" / "best_model.pth",
-        ]
-        model_ckpt = None
-        for path in possible_model_paths:
-            if path.exists():
-                model_ckpt = str(path)
-                break
-        
-        if model_ckpt is None:
-            logging.warning("Model checkpoint not found in models/tea_single_objects or models/mujoco. Skipping results.txt generation.")
-            return False
     
     # Prepare file paths (only RGB-D required)
     rgb_image = str(test_datapoint_dir / "image.png")
@@ -475,23 +457,6 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
         n_T = 500
         betas = (1e-4, 0.02)
         
-        # Load model: DDPMTeaSingle + MaskedDenseFusionTeaSingle (RGB-D only)
-        logging.info(f"Loading model from {model_ckpt}...")
-        model = DDPMTeaSingle(
-            nn_model=MaskedDenseFusionTeaSingle(n_feat=n_feat, out_dim=3),
-            betas=betas,
-            n_T=n_T,
-            device=device,
-        )
-        ckpt = torch.load(model_ckpt, map_location=device)
-        model_dict = model.state_dict()
-        pretrained = {k: v for k, v in ckpt.items() if k.startswith("nn_model.") and k in model_dict and model_dict[k].shape == v.shape}
-        model_dict.update(pretrained)
-        model.load_state_dict(model_dict, strict=False)
-        model.to(device)
-        model.eval()
-        logging.info("Model loaded successfully.")
-        
         transform_RGB, _, transform_depth = build_transforms()
         
         # Get depth and cam_view: from latest captured view or from disk
@@ -511,41 +476,152 @@ def generate_results_txt(test_datapoint_dir: Path, model_ckpt: str = None, n_sam
             depth_img = PILImage.open(depth_image).convert("L")
             depth = transform_depth(depth_img).unsqueeze(0).to(device).float()
         
-        logging.info("Sampling 3D coordinates (RGB-D only)...")
-        start_time = time.perf_counter()
-        with torch.no_grad():
-            generated_coords, _ = model.sample(
-                n_sample=n_sample,
-                depth=depth,
-                cam_view=cam_view,
-                device=device,
-                guide_w=1.0,
-            )
-        end_time = time.perf_counter()
-        
-        sampling_time = end_time - start_time
-        avg_time_per_sample = sampling_time / n_sample
-        logging.info(f"Sampling completed in {sampling_time:.2f} seconds "
-                    f"({sampling_time:.4f}s total, {avg_time_per_sample:.4f}s per sample)")
-        
-        generated_coords = generated_coords.cpu().numpy()
-        
-        # Convert to world coordinates
+        # Helper: find checkpoint path for a specific object name.
+        workspace_root = Path(__file__).parent.parent.parent
+
+        def _find_model_for_object(obj_name: str) -> str | None:
+            """Return checkpoint path for given object name, or None if not found."""
+            candidates = [
+                workspace_root / "models" / "tea_single_objects_new" / obj_name / "best_model.pth",
+                Path("models") / "tea_single_objects_new" / obj_name / "best_model.pth",
+                workspace_root / "models" / "tea_single_objects" / obj_name / "best_model.pth",
+                Path("models") / "tea_single_objects" / obj_name / "best_model.pth",
+            ]
+            for p in candidates:
+                if p.exists():
+                    return str(p)
+            return None
+
+        # Decide which object models to use based on current kitchen task.
+        # For clean_mug: only mug and sponge are relevant.
+        goal = goal_name
+        if goal == "clean_mug":
+            object_names = ["mug", "sponge"]
+        elif goal == "make_tea":
+            # Assume mug and tea are relevant for locating tea-related objects.
+            object_names = ["mug", "tea"]
+        elif goal == "make_milktea":
+            # Assume full pipeline needs mug, sponge, tea, milk.
+            object_names = ["mug", "sponge", "tea", "milk"]
+        else:
+            # Default: use all four grippable objects except banana.
+            object_names = ["mug", "sponge", "tea", "milk"]
+
+        # If a single explicit model_ckpt is given, fall back to old behavior:
+        # use that checkpoint once and ignore per-object mapping.
+        single_checkpoint_mode = model_ckpt is not None
+
+        # World coordinate conversion (shared for all objects).
         world_min = np.array([-1.2, -1.0, 0.0])
         world_max = np.array([1.0, 1.5, 3.0])
         world_range = world_max - world_min
-        generated_coords = generated_coords * world_range + world_min
-        logging.info("Converted to world coordinates.")
-        
-        # Save results
-        logging.info(f"Saving coordinates to {output_file}...")
+
+        all_coords_list = []
+
+        if single_checkpoint_mode:
+            ckpt_path = Path(model_ckpt)
+            if not ckpt_path.exists():
+                logging.warning(f"Explicit model_ckpt {ckpt_path} does not exist. Skipping results.txt generation.")
+                return False
+            object_list_for_logging = ["(single_checkpoint)"]
+            ckpt_map = {"(single_checkpoint)": str(ckpt_path)}
+        else:
+            object_list_for_logging = object_names
+            ckpt_map = {}
+            for name in object_names:
+                ckpt_path = _find_model_for_object(name)
+                if ckpt_path is None:
+                    logging.warning(f"No checkpoint found for object '{name}', skipping this object.")
+                else:
+                    ckpt_map[name] = ckpt_path
+
+        if not ckpt_map:
+            logging.warning("No valid model checkpoints found for any object. Skipping results.txt generation.")
+            return False
+
+        # Loop over each object-specific model and append all sampled coordinates.
+        per_object_coords: Dict[str, np.ndarray] = {}
+        for obj_name in object_list_for_logging:
+            if obj_name not in ckpt_map:
+                continue
+            ckpt_path = ckpt_map[obj_name]
+            logging.info(f"Loading model for object '{obj_name}' from {ckpt_path}...")
+
+            model = DDPMTeaSingle(
+                nn_model=MaskedDenseFusionTeaSingle(n_feat=n_feat, out_dim=3),
+                betas=betas,
+                n_T=n_T,
+                device=device,
+            )
+            ckpt = torch.load(ckpt_path, map_location=device)
+            model_dict = model.state_dict()
+            pretrained = {
+                k: v for k, v in ckpt.items()
+                if k.startswith("nn_model.") and k in model_dict and model_dict[k].shape == v.shape
+            }
+            model_dict.update(pretrained)
+            model.load_state_dict(model_dict, strict=False)
+            model.to(device)
+            model.eval()
+            logging.info(f"Model for '{obj_name}' loaded successfully.")
+
+            logging.info(f"Sampling 3D coordinates for '{obj_name}' (RGB-D only)...")
+            start_time = time.perf_counter()
+            with torch.no_grad():
+                generated_coords, _ = model.sample(
+                    n_sample=n_sample,
+                    depth=depth,
+                    cam_view=cam_view,
+                    device=device,
+                    guide_w=1.0,
+                )
+            end_time = time.perf_counter()
+
+            sampling_time = end_time - start_time
+            avg_time_per_sample = sampling_time / n_sample
+            logging.info(
+                f"[{obj_name}] Sampling completed in {sampling_time:.2f} seconds "
+                f"({sampling_time:.4f}s total, {avg_time_per_sample:.4f}s per sample)"
+            )
+
+            coords_np = generated_coords.cpu().numpy()
+            coords_world = coords_np * world_range + world_min
+            per_object_coords[obj_name] = coords_world
+            all_coords_list.append(coords_world)
+
+        if not all_coords_list:
+            logging.warning("Sampling produced no coordinates. Skipping results.txt generation.")
+            return False
+
+        # Save per-object results first: one file per object type.
+        # Example filenames:
+        #   predicators/test_datapoint/results_mug.txt
+        #   predicators/test_datapoint/results_sponge.txt
         output_dir = os.path.dirname(output_file)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
+        total_points = 0
+        for obj_name, coords_world in per_object_coords.items():
+            obj_suffix = obj_name if obj_name != "(single_checkpoint)" else "single"
+            obj_output = Path(output_dir) / f"results_{obj_suffix}.txt"
+            logging.info(f"Saving coordinates for '{obj_name}' to {obj_output}...")
+            with open(obj_output, "w") as f_obj:
+                for coord in coords_world:
+                    f_obj.write(" ".join(map(str, coord)) + "\n")
+            total_points += coords_world.shape[0]
+
+        # For backward compatibility, also save a combined results.txt that
+        # merges all sampled coordinates across objects.
+        all_coords = np.vstack(all_coords_list)
+        logging.info(f"Total sampled coordinates (all objects combined): {all_coords.shape[0]}")
+        logging.info(f"Saving combined coordinates to {output_file}...")
         with open(output_file, "w") as f:
-            for coord in generated_coords:
-                f.write(' '.join(map(str, coord)) + '\n')
-        logging.info(f"Successfully saved {n_sample} coordinates to {output_file}")
+            for coord in all_coords:
+                f.write(" ".join(map(str, coord)) + "\n")
+        logging.info(
+            f"Successfully saved {all_coords.shape[0]} coordinates to {output_file} "
+            f"and {len(per_object_coords)} per-object files."
+        )
         return True
         
     except Exception as e:
