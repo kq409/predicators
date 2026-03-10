@@ -128,7 +128,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             elif obj.name == "microhandle":
                 target_quat = angled_quat
                 memory["waypoints"] = [
-                    # ((gx - 0.15, gy - 0.15, gz + 0.2), down_quat),
+                    ((gx, gy - 0.1, gz - 0.1), down_quat),
                     (cls.home_pos, init_quat),
                     ((ox + dx - 0.3, oy + dy - 0.1, oz + 0.2), prepullmicro_quat),
                     # ((ox + dx - 0.2, oy + dy - 0.1, oz + 0.1), prepullmicro_quat),
@@ -670,7 +670,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 memory["target_quat"] = prepullmicro_quat
                 memory["waypoints"] = [
                     ((gx + 0.1, gy - 0.2, gz), prepullmicro_quat),
-                    ((gx + 0.1, gy - 0.05, gz), prepullmicro_quat),
+                    # ((gx + 0.1, gy - 0.05, gz), prepullmicro_quat),
+                    ((gx + 0.1, gy - 0.025, gz), prepullmicro_quat),
                     # ((gx, gy, gz), prepullmicro_quat),
                 ]
                 print(f"waypoints: {memory['waypoints']}")

@@ -195,7 +195,7 @@ class KitchenEnv(BaseEnv):
         # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
         "microhandle": np.array([-0.3187852, 0.74210206, 1.792]),
         "countertop": np.array([0.0, 0.5, 1.626]),
-        "sink": np.array([0.2, 0.3, 1.9]),
+        "sink": np.array([0.2, 0.3, 1.8]),
     }
 
     def __init__(self, use_gui: bool = True) -> None:
@@ -1078,27 +1078,39 @@ README of that repo suggests!"
         mujoco_utils.set_joint_qpos(model, data, joint_name, value)
         mujoco.mj_forward(model, data) 
 
+    def set_object_positions_override(self, object_positions):
+        """Optionally override default new-object positions.
+
+        object_positions should be a list of 5 [x, y, z] lists in the order:
+        [\"banana\", \"mug\", \"milk\", \"sponge\", \"tea\"]. If None is passed,
+        the override is cleared and the default hardcoded positions are used.
+        """
+        self._object_positions_override = object_positions
+
     def _setup_new_objects(self, seed: int, train_or_test: str) -> None:
         """Set up new objects."""
         rng = np.random.default_rng(seed)
-        
-        # New objects position setting
-        if train_or_test == "train":
-            object_positions = [
-                [0.0, 0.0, 0.0],
-                [-0.3, 0.82, 1.7],
-                [-0.15, 0.85, 1.7],
-                [-0.4, 0.7, 2.45],
-                [-0.1, 0.85, 1.7],
-            ]
-        else:
-            object_positions = [
-                [0.0, 0.0, 0.0],
-                [-0.3, 0.82, 1.7],
-                [-0.15, 0.85, 1.7],
-                [-0.4, 0.7, 2.45],
-                [-0.1, 0.85, 1.7],
-            ]
+
+        # If an override is set (e.g., from an experiment script), prefer it.
+        object_positions = getattr(self, "_object_positions_override", None)
+        if object_positions is None:
+            # Default hardcoded positions (backward compatible behavior).
+            if train_or_test == "train":
+                object_positions = [
+                    [0.0, 0.0, 0.0],
+                    [-0.3, 0.82, 1.7],
+                    [-0.15, 0.85, 1.7],
+                    [-0.4, 0.7, 2.45],
+                    [-0.1, 0.85, 1.7],
+                ]
+            else:
+                object_positions = [
+                    [0.0, 0.0, 0.0],
+                    [-0.3, 0.82, 1.7],
+                    [-0.15, 0.85, 1.7],
+                    [-0.4, 0.7, 2.45],
+                    [-0.1, 0.85, 1.7],
+                ]
 
         # if train_or_test == "train":
         #     object_positions = [
