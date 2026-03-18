@@ -26,9 +26,9 @@ class KitchenPerceiver(BasePerceiver):
         burner3 = KitchenEnv.object_name_to_object("burner3")
         burner2 = KitchenEnv.object_name_to_object("burner2")
         light = KitchenEnv.object_name_to_object("light")
-        banana = KitchenEnv.object_name_to_object("banana")
-        BananaFound = pred_name_to_pred["BananaFound"]
-        BananaOnTop = pred_name_to_pred["BananaOnTop"]
+        # banana = KitchenEnv.object_name_to_object("banana")
+        # BananaFound = pred_name_to_pred["BananaFound"]
+        # BananaOnTop = pred_name_to_pred["BananaOnTop"]
         MugInSink = pred_name_to_pred["MugInSink"]
         SpongeInSink = pred_name_to_pred["SpongeInSink"]
         MugWashed = pred_name_to_pred["MugWashed"]
@@ -68,12 +68,12 @@ class KitchenPerceiver(BasePerceiver):
         elif goal_desc == ("Move the kettle to the back right burner "
                            "and turn it on"):
             goal = {GroundAtom(KettleBoiling, [kettle, burner3, knob3])}
-        elif goal_desc == "Find the banana":
-            goal = {GroundAtom(BananaFound, [banana])}
-        elif goal_desc == "Take out the banana":
-            goal = {
-                GroundAtom(BananaOnTop, [banana, burner2])
-            }
+        # elif goal_desc == "Find the banana":
+        #     goal = {GroundAtom(BananaFound, [banana])}
+        # elif goal_desc == "Take out the banana":
+        #     goal = {
+        #         GroundAtom(BananaOnTop, [banana, burner2])
+        #     }
         elif goal_desc == "Put the mug in the sink":
             goal = {GroundAtom(MugInSink, [mug, sink])}
         elif goal_desc == "CleanMug" or goal_desc == "Clean the mug":

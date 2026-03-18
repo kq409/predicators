@@ -3,12 +3,46 @@
 from typing import List, Set, Dict
 from pathlib import Path
 import os
+import logging
+from datetime import datetime
 
 from predicators.envs import BaseEnv
+from predicators.envs.kitchen import KitchenEnv
 from predicators.envs.exit_garage import ExitGarageEnv
 from predicators.refinement_estimators import BaseRefinementEstimator
 from predicators.settings import CFG
 from predicators.structs import GroundAtom, State, Task, _GroundNSRT
+
+# Repository root (diffusion_behavior) and experiment results directory
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+EXPERIMENT_RESULTS_DIR = _REPO_ROOT / "experiment_results"
+
+# Directory for detailed refinement cost logs (under experiment_results/)
+_COST_LOG_DIR = EXPERIMENT_RESULTS_DIR / "skeleton_cost_logs"
+_COST_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _get_cost_logger() -> logging.Logger:
+    """Return a logger that writes detailed skeleton cost information.
+
+    Log file lives under experiment_results/skeleton_cost_logs/, with one file
+    per run (timestamped). We keep the logger global so multiple calls within a
+    single run share the same handler.
+    """
+    logger = logging.getLogger("oracle_refinement_cost")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.DEBUG)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = _COST_LOG_DIR / f"skeleton_cost_{timestamp}.log"
+    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    formatter = logging.Formatter("%(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False  # avoid duplicating to root logger
+    logger.info(f"Skeleton cost log file: {log_path}")
+    return logger
 
 
 class OracleRefinementEstimator(BaseRefinementEstimator):
@@ -174,9 +208,6 @@ def point_in_region(point: tuple, region: Dict) -> bool:
 def load_object_coordinates(file_path: str = None) -> List[tuple]:
     """
     Load object coordinates from results.txt file.
-    用于 kitchen 任务的物体位置统计。当前场景中有 5 个物体：
-    mug, sponge, tea, milk, banana（banana 暂不用于任务），
-    这些坐标由 diffusion 模型生成（模型路径在 models/tea_single_objects_new 下）。
     
     Args:
         file_path: Path to results.txt file. If None, uses default path.
@@ -185,26 +216,16 @@ def load_object_coordinates(file_path: str = None) -> List[tuple]:
         List of (x, y, z) tuples representing object positions
     """
     if file_path is None:
-        # Default path: predicators/test_datapoint/results.txt
-        # Try multiple possible paths
-        possible_paths = [
-            # Relative to current file: predicators/predicators/refinement_estimators/oracle_refinement_estimator.py
-            Path(__file__).parent.parent.parent / "test_datapoint" / "results.txt",
-            # Relative to workspace root
-            Path("predicators") / "test_datapoint" / "results.txt",
-            # Absolute path from workspace
-            Path(__file__).parent.parent.parent.parent / "predicators" / "test_datapoint" / "results.txt",
-        ]
-        
-        file_path = None
-        for path in possible_paths:
-            if path.exists():
-                file_path = path
-                break
-        
-        if file_path is None:
-            # If still not found, try the first path
-            file_path = possible_paths[0]
+        # 默认：从 experiment_results/ 下最新的 results.txt 读取
+        if not EXPERIMENT_RESULTS_DIR.exists():
+            return []
+
+        candidate_files = list(EXPERIMENT_RESULTS_DIR.rglob("results.txt"))
+        if not candidate_files:
+            return []
+
+        # 选修改时间最新的一个结果文件
+        file_path = max(candidate_files, key=lambda p: p.stat().st_mtime)
     
     coordinates = []
     try:
@@ -234,28 +255,19 @@ def load_object_coordinates(file_path: str = None) -> List[tuple]:
 def load_object_coordinates_for_object(obj_name: str) -> List[tuple]:
     """Load object coordinates from a per-object results file.
 
-    Expected filenames (searched in several locations), e.g.:
-        predicators/test_datapoint/results_mug.txt
-        predicators/test_datapoint/results_sponge.txt
+    Expected filenames (searched under experiment_results/), e.g.:
+        experiment_results/.../results_mug.txt
+        experiment_results/.../results_sponge.txt
     """
     suffix = f"results_{obj_name}.txt"
-    possible_paths = [
-        # Relative to this file: predicators/predicators/refinement_estimators/../test_datapoint
-        Path(__file__).parent.parent.parent / "test_datapoint" / suffix,
-        # Relative to workspace root
-        Path("predicators") / "test_datapoint" / suffix,
-        # Absolute path from workspace root guessing
-        Path(__file__).parent.parent.parent.parent / "predicators" / "test_datapoint" / suffix,
-    ]
-
-    file_path: Path | None = None
-    for path in possible_paths:
-        if path.exists():
-            file_path = path
-            break
-    if file_path is None:
+    if not EXPERIMENT_RESULTS_DIR.exists():
         return []
 
+    candidate_files = list(EXPERIMENT_RESULTS_DIR.rglob(suffix))
+    if not candidate_files:
+        return []
+
+    file_path = max(candidate_files, key=lambda p: p.stat().st_mtime)
     return load_object_coordinates(str(file_path))
 
 
@@ -411,9 +423,21 @@ def kitchen_oracle_estimator_per_object(
 
     If we cannot infer the object or there is no per-object distribution for it,
     we fall back to region_probs_default (computed from merged results.txt).
-    """
-    del atoms_sequence, initial_state  # currently unused
 
+    Additionally, if an object has already been found (according to the current
+    high-level state), we treat its success probability as 1.0 instead of using
+    the diffusion-based prior. This avoids incorrectly assigning infinite cost
+    when a skeleton revisits containers after an object has already been found.
+
+    This function also logs detailed cost computation for each skeleton step to
+    experiment_results/skeleton_cost_logs/*.log, including:
+      - per-step base cost
+      - whether the step is part of an observe sequence
+      - inferred target object for observe sequences
+      - success probability used (if any)
+      - determinized cost contribution
+      - cumulative total cost
+    """
     # Container names that can be observed
     container_names = {"hinge2", "slide", "microhandle"}
     
@@ -435,6 +459,45 @@ def kitchen_oracle_estimator_per_object(
     
     # Small epsilon to avoid division by zero
     EPSILON = 1e-6
+
+    logger = _get_cost_logger()
+    logger.info("=" * 80)
+    logger.info("Kitchen oracle refinement cost (per-object) debug log")
+    logger.info(f"Num skeleton steps: {len(skeleton)}")
+
+    def _is_object_found(obj_name: str) -> bool:
+        """Check whether a given object has already been found using state.
+
+        We follow the same logic as KitchenEnv._ObjectFound_holds: first look
+        at the State feature "<obj>.found", then fall back to the environment-
+        level found-status dictionary and, finally, real-state checks.
+
+        This avoids relying on atoms_sequence alignment and directly queries
+        the current high-level state / environment belief.
+        """
+        # Currently only implemented for KitchenEnv.
+        if not isinstance(env, KitchenEnv):
+            return False
+
+        try:
+            obj = KitchenEnv.object_name_to_object(obj_name)
+        except KeyError:
+            return False
+
+        # First: try the state "found" feature, which ObserveContainer sets.
+        try:
+            found_in_state = initial_state.get(obj, "found")
+            if found_in_state:
+                return True
+        except (ValueError, KeyError):
+            pass
+
+        # Second: use the KitchenEnv-level found status via _ObjectFound_holds,
+        # which also includes a real-state fallback if needed.
+        try:
+            return KitchenEnv._ObjectFound_holds(initial_state, [obj])
+        except Exception:
+            return False
     
     total_cost = 0.0
     
@@ -450,6 +513,11 @@ def kitchen_oracle_estimator_per_object(
             
         ground_nsrt = skeleton[i]
         nsrt_name = ground_nsrt.name
+        # Record object names for logging (important for generic NSRTs like *Object)
+        obj_names = [
+            getattr(o, "name", str(o)) for o in getattr(ground_nsrt, "objects", [])
+        ]
+        obj_names_str = ",".join(obj_names) if obj_names else "None"
         
         # Check if this is part of an observe sequence
         if nsrt_name == "MoveToPreTurnOn":
@@ -499,55 +567,67 @@ def kitchen_oracle_estimator_per_object(
                         def _infer_target_object_name(start_idx: int) -> str | None:
                             """Look ahead from start_idx to infer which object is searched.
 
-                            We inspect subsequent NSRT names to find the first
-                            one that is clearly tied to a specific grippable
-                            object (mug/sponge/tea/milk/banana).
+                            We no longer rely on NSRT names being object-specific.
+                            Instead, we look for the first ground NSRT whose arguments
+                            include a grippable object (banana/mug/sponge/tea/milk),
+                            and return that object's name.
                             """
-                            name_to_obj = {
-                                # Banana
-                                "MoveToPrePickUpBanana": "banana",
-                                "PickBanana": "banana",
-                                "MoveToTargetBanana": "banana",
-                                # Mug
-                                "MoveToPrePickUpMug": "mug",
-                                "PickMug": "mug",
-                                "MoveToTargetMug": "mug",
-                                "PlaceMugInSink": "mug",
-                                # Sponge
-                                "MoveToPrePickUpSponge": "sponge",
-                                "PickSponge": "sponge",
-                                "MoveToTargetSponge": "sponge",
-                                "WashMug": "sponge",
-                                # Tea
-                                "MoveToPrePickUpTea": "tea",
-                                "PickTea": "tea",
-                                "MoveToTargetTea": "tea",
-                                "MakeTea": "tea",
-                            }
                             for k in range(start_idx + sequence_length, len(skeleton)):
-                                nm = skeleton[k].name
-                                if nm in name_to_obj:
-                                    return name_to_obj[nm]
+                                nsrt_k = skeleton[k]
+                                for obj_k in nsrt_k.objects:
+                                    # Use KitchenEnv.grippable_object_type to test membership
+                                    try:
+                                        if obj_k.is_instance(KitchenEnv.grippable_object_type):
+                                            return getattr(obj_k, "name", str(obj_k))
+                                    except Exception:
+                                        continue
                             return None
 
                         target_obj_name = _infer_target_object_name(i)
 
-                        # Select the appropriate region_probs for this object,
-                        # with fallback to default merged probabilities.
-                        if target_obj_name and target_obj_name in region_probs_by_obj:
-                            per_obj_region_probs = region_probs_by_obj[target_obj_name]
-                        else:
-                            per_obj_region_probs = region_probs_default
-
-                        # Get success probability for this container from the
-                        # (possibly per-object) region_probs.
-                        if container_name in container_to_region:
-                            region_name = container_to_region[container_name]
-                            success_prob = per_obj_region_probs.get(
-                                region_name, DEFAULT_SUCCESS_PROBABILITY
+                        # If the inferred target object has already been found
+                        # according to the current high-level state, treat this
+                        # observe sequence as having success probability 1.0
+                        # (i.e., no inflation from the diffusion prior).
+                        if target_obj_name and _is_object_found(target_obj_name):
+                            success_prob = 1.0
+                            logger.info(
+                                f"[step {i}] Observe sequence at container={container_name}, "
+                                f"target_obj={target_obj_name} (already FOUND) -> "
+                                f"success_prob=1.0 (override diffusion prior)"
                             )
                         else:
-                            success_prob = DEFAULT_SUCCESS_PROBABILITY
+                            # Select the appropriate region_probs for this object,
+                            # with fallback to default merged probabilities.
+                            if target_obj_name and target_obj_name in region_probs_by_obj:
+                                per_obj_region_probs = region_probs_by_obj[target_obj_name]
+                                logger.info(
+                                    f"[step {i}] Observe sequence at container={container_name}, "
+                                    f"target_obj={target_obj_name} uses per-object region_probs."
+                                )
+                            else:
+                                per_obj_region_probs = region_probs_default
+                                logger.info(
+                                    f"[step {i}] Observe sequence at container={container_name}, "
+                                    f"target_obj={target_obj_name} uses DEFAULT region_probs."
+                                )
+
+                            # Get success probability for this container from the
+                            # (possibly per-object) region_probs.
+                            if container_name in container_to_region:
+                                region_name = container_to_region[container_name]
+                                success_prob = per_obj_region_probs.get(
+                                    region_name, DEFAULT_SUCCESS_PROBABILITY
+                                )
+                            else:
+                                region_name = "UNKNOWN"
+                                success_prob = DEFAULT_SUCCESS_PROBABILITY
+
+                            logger.info(
+                                f"[step {i}] Observe sequence at container={container_name}, "
+                                f"region={region_name}, target_obj={target_obj_name}, "
+                                f"success_prob={success_prob:.6f}, base_cost={base_cost:.4f}"
+                            )
                         
                         # Calculate determinized cost
                         if success_prob < EPSILON:
@@ -556,6 +636,10 @@ def kitchen_oracle_estimator_per_object(
                             determinized_cost = base_cost / max(success_prob, EPSILON)
                         
                         total_cost += determinized_cost
+                        logger.info(
+                            f"[step {i}] Observe sequence determinized_cost={determinized_cost}, "
+                            f"cumulative_total_cost={total_cost}"
+                        )
                         
                         # Mark all NSRTs in this sequence as processed
                         for j in range(i, min(i + sequence_length, len(skeleton))):
@@ -563,27 +647,51 @@ def kitchen_oracle_estimator_per_object(
                     else:
                         # Not part of observe sequence, use base cost
                         total_cost += BASE_COST_MOVE
+                        logger.info(
+                            f"[step {i}] {nsrt_name} (non-observe container move, objects={obj_names_str}) "
+                            f"base_cost={BASE_COST_MOVE:.4f}, cumulative_total_cost={total_cost}"
+                        )
                 else:
                     # Not a container, use base cost
                     total_cost += BASE_COST_MOVE
+                    logger.info(
+                        f"[step {i}] {nsrt_name} (non-container MoveToPreTurnOn, objects={obj_names_str}) "
+                        f"base_cost={BASE_COST_MOVE:.4f}, cumulative_total_cost={total_cost}"
+                    )
             else:
                 total_cost += BASE_COST_MOVE
+                logger.info(
+                    f"[step {i}] {nsrt_name} (MoveToPreTurnOn without objects) "
+                    f"base_cost={BASE_COST_MOVE:.4f}, cumulative_total_cost={total_cost}"
+                )
         
         elif nsrt_name in ["PushOpenHingeDoor", "PushOpen"]:
             # Only add cost if not already processed as part of observe sequence
             # PushOpen is used for slide container, PushOpenHingeDoor for other containers
             if i not in processed_indices:
                 total_cost += BASE_COST_OPEN
+                logger.info(
+                    f"[step {i}] {nsrt_name} (standalone open, objects={obj_names_str}) "
+                    f"base_cost={BASE_COST_OPEN:.4f}, cumulative_total_cost={total_cost}"
+                )
         
         elif nsrt_name in ["ObserveContainer"]:
             # Only add cost if not already processed as part of observe sequence
             # Observe cost is 0 as per user's design
             if i not in processed_indices:
                 total_cost += BASE_COST_OBSERVE
+                logger.info(
+                    f"[step {i}] {nsrt_name} (standalone observe, objects={obj_names_str}) "
+                    f"base_cost={BASE_COST_OBSERVE:.4f}, cumulative_total_cost={total_cost}"
+                )
         
         else:
             # Other actions use base cost
             total_cost += BASE_COST_OTHER
+            logger.info(
+                f"[step {i}] {nsrt_name} (other action, objects={obj_names_str}) "
+                f"base_cost={BASE_COST_OTHER:.4f}, cumulative_total_cost={total_cost}"
+            )
         
         i += 1
 
