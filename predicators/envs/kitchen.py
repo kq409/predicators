@@ -124,6 +124,7 @@ class KitchenEnv(BaseEnv):
 
     at_pre_turn_atol = 0.1  # tolerance for AtPreTurnOn/Off
     ontop_atol = 0.18  # tolerance for OnTop
+    ontop_z_atol = 0.1  # tolerance for OnTop z position
     on_angle_thresh = -0.28  # -0.4  # dial is On if less than this threshold
     light_on_thresh = -0.39  # light is On if less than this threshold
     # microhandle_open_thresh = -0.65
@@ -466,11 +467,17 @@ README of that repo suggests!"
             Predicate("Observed", [cls.hinge_door_type], cls._Observed_holds),
             Predicate("NotObserved", [cls.hinge_door_type], cls._NotObserved_holds),
             # Predicate("BananaFound", [cls.banana_type], cls._BananaFound_holds),
-            Predicate("ObjectFound", [cls.grippable_object_type], cls._ObjectFound_holds),
+            # For the grippable objects, we additionally parameterize by the
+            # hinge door/container where the object was observed to be found.
+            Predicate("ObjectFound", [cls.grippable_object_type, cls.hinge_door_type],
+                      cls._ObjectFound_holds),
+            Predicate("ObjectNotFound", [cls.grippable_object_type, cls.hinge_door_type],
+                      cls._ObjectNotFound_holds),
             Predicate("CanObserve", [cls.hinge_door_type], cls._CanObserve_holds),
             # Predicate("BananaOnTop", [cls.banana_type, cls.object_type], cls._BananaOnTop_holds),
             # Predicate("BananaPickedUp", [cls.gripper_type, cls.banana_type], cls._BananaPickedUp_holds),
             Predicate("ObjectPickedUp", [cls.gripper_type, cls.grippable_object_type], cls._ObjectPickedUp_holds),
+            Predicate("GripperFree", [cls.gripper_type], cls._GripperFree_holds),
             Predicate("MugInSink", [cls.mug_type, cls.object_type], cls._OnTop_holds),
             Predicate("SpongeInSink", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
             Predicate("MugWashed", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
@@ -1245,7 +1252,8 @@ README of that repo suggests!"
         ]
         return np.allclose(obj1_xy,
                            obj2_xy, atol=cls.ontop_atol) and state.get(
-                               obj1, "z") > state.get(obj2, "z")
+                               obj1, "z") > state.get(obj2, "z") and np.isclose(
+                                state.get(obj1, "z"), state.get(obj2, "z"), atol=cls.ontop_z_atol)
 
     @classmethod
     def _NotOnTop_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -1484,51 +1492,39 @@ README of that repo suggests!"
 
     @classmethod
     def _ObjectFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        """Check if object (banana or mug) has been found.
-        
-        First check state variable object.found (set by ObserveContainer option).
-        If not exist or False, check environment level status.
-        Finally check real state (backward compatibility).
+        """Check if object has been found in a specific container.
+
+        This predicate is parameterized by both the object and the container.
+        We require:
+        1) the container has been observed, and
+        2) in the real state, the container contains the object (within
+           detection threshold), and
+        3) the object is not currently grasped (handled in _ContainsObject_holds).
         """
         obj = objects[0]
-        obj_name = obj.name if hasattr(obj, 'name') else ""
-        
-        # First check state variable object.found (now object type contains found feature)
-        try:
-            found_in_state = state.get(obj, "found")
-            if found_in_state:
-                return True
-        except (ValueError, KeyError):
-            pass  # feature not exist, continue checking other way
-        
-        # Second check environment level status (set by set_banana_found or set_mug_found)
-        if obj_name in cls._grippable_object_found_status:
-            found_status = cls._grippable_object_found_status[obj_name]
-            if found_status:
-                return True
-        
-        # Backward compatibility: if state variable and environment status do not exist or are False, check real state
+        container = objects[1]
+        obj_name = obj.name if hasattr(obj, "name") else ""
+
+        if not cls._Observed_holds(state, [container]):
+            return False
+
+        # _Contains* predicates expect [gripper_placeholder, container]; the
+        # placeholder gripper is not used in their internal distance logic.
         gripper = cls.object_name_to_object("gripper")
-        # Check if any container contains the object AND has been observed
-        containers = ["hinge1", "hinge2", "slide", "microhandle"]
-        for container_name in containers:
-            container = cls.object_name_to_object(container_name)
-            observed = cls._Observed_holds(state, [container])
-            # Check contains based on object type
-            # if obj_name == "banana":
-            #     contains_obj = cls._ContainsBanana_holds(state, [gripper, container])
-            if obj_name == "mug":
-                contains_obj = cls._ContainsMug_holds(state, [gripper, container])
-            elif obj_name == "sponge":
-                contains_obj = cls._ContainsSponge_holds(state, [gripper, container])
-            elif obj_name == "tea":
-                contains_obj = cls._ContainsTea_holds(state, [gripper, container])
-            else:
-                contains_obj = False
-            
-            if contains_obj and observed:
-                return True
+        if obj_name == "mug":
+            return cls._ContainsMug_holds(state, [gripper, container])
+        if obj_name == "sponge":
+            return cls._ContainsSponge_holds(state, [gripper, container])
+        if obj_name == "tea":
+            return cls._ContainsTea_holds(state, [gripper, container])
+        # Unsupported object types (e.g., banana, if re-enabled later).
         return False
+
+    @classmethod
+    def _ObjectNotFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Negation of _ObjectFound_holds over (obj, container)."""
+        return not cls._ObjectFound_holds(state, objects)
+
 
     # @classmethod
     # def _BananaFound_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -1617,4 +1613,9 @@ README of that repo suggests!"
         obj = objects[1]
         obj_name = obj.name if hasattr(obj, "name") else ""
         return cls._grippable_object_grasped_status.get(obj_name, False)
+
+    @classmethod
+    def _GripperFree_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if gripper is free (not holding any object)."""
+        return not any(cls._grippable_object_grasped_status.values())
 

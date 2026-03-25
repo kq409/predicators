@@ -15,12 +15,84 @@ from typing import Any, List, Set, Tuple
 from gym.spaces import Box
 
 from predicators import utils
+from predicators.approaches import ApproachFailure, ApproachTimeout
 from predicators.approaches.oracle_approach import OracleApproach
 from predicators.refinement_estimators import BaseRefinementEstimator, \
     create_refinement_estimator
 from predicators.settings import CFG
 from predicators.structs import NSRT, Metrics, ParameterizedOption, \
     Predicate, Task, Type, _GroundNSRT, _Option, GroundAtom
+
+from math import log, log10
+
+
+def _lookup_ground_op_cost(
+        ground_nsrt: _GroundNSRT,
+        cost_by_name: dict,
+        default_cost: float) -> float:
+    """Look up cost for a ground NSRT. Supports:
+    - Full key (name + objects in param order): "observecontainersponge robot0 hinge2 mug sponge tea"
+    - Name only: "ObserveContainerSponge" (applies to all groundings)
+    Lookup order: full key -> name -> name.lower() -> default_cost."""
+    obj_names = [getattr(o, "name", str(o)).lower() for o in ground_nsrt.objects]
+    full_key = f"{ground_nsrt.name.lower()} {' '.join(obj_names)}".strip()
+    name_key = ground_nsrt.name
+    name_key_lower = ground_nsrt.name.lower()
+    # Try full key first, then name (case-insensitive)
+    for key in (full_key, name_key, name_key_lower):
+        if key in cost_by_name:
+            return cost_by_name[key]
+    return default_cost
+
+
+def _compute_ground_op_cost_from_region_probs(
+        ground_nsrt: _GroundNSRT,
+        region_probs_by_obj: dict,
+        region_probs_default: dict,
+        default_cost: float) -> float:
+    """Compute FD cost for a ground NSRT using oracle-style region probs.
+    Only ObserveContainer* costs are adjusted; others use default_cost.
+    ObserveContainer*: cost = 1.0 / success_prob (base=1, determinization)."""
+    DEFAULT_SUCCESS_PROBABILITY = 1.0 / 3.0
+    EPSILON = 1e-6
+    BASE_COST_OBSERVE = 1.0
+    container_to_region = {
+        "microhandle": "microwave",
+        "hinge2": "right_hinge_cabinet",
+        "slide": "slide_cabinet",
+    }
+    nsrt_name = ground_nsrt.name
+    # if nsrt_name in ["MoveToPreTurnOn", "PushOpenHingeDoor", "PushOpen"]:
+    #     # return default_cost
+    #     return 0
+    if nsrt_name.startswith("ObserveContainer"):
+        found_obj_names = sorted({
+            a.objects[0].name for a in ground_nsrt.add_effects
+            if getattr(a.predicate, "name", None) == "ObjectFound" and a.objects
+        })
+        num_effects = len(found_obj_names)
+        return 0.1 + 0.1 * num_effects
+    if nsrt_name.startswith("MoveToPrePickUp"):
+        # if len(ground_nsrt.objects) < 2:
+        #     return BASE_COST_OBSERVE
+        container_name = getattr(ground_nsrt.objects[2], "name", str(ground_nsrt.objects[2]))
+        region_name = container_to_region.get(container_name, "right_hinge_cabinet")
+        found_obj_names = sorted({
+            a.objects[0].name for a in ground_nsrt.preconditions
+            if getattr(a.predicate, "name", None) == "ObjectFound" and a.objects
+        })
+        elem_probs = []
+        for obj_name in found_obj_names:
+            if obj_name in region_probs_by_obj:
+                elem_probs.append(
+                    region_probs_by_obj[obj_name].get(region_name, DEFAULT_SUCCESS_PROBABILITY))
+            else:
+                elem_probs.append(
+                    region_probs_default.get(region_name, DEFAULT_SUCCESS_PROBABILITY))
+        lambda_ = 1.0
+        for p in elem_probs:
+            return default_cost + lambda_ * (-log10(max(p, EPSILON)))
+    return default_cost
 
 
 class RefinementEstimationApproach(OracleApproach):
@@ -89,13 +161,79 @@ class RefinementEstimationApproach(OracleApproach):
     ) -> Tuple[List[_GroundNSRT], List[Set[GroundAtom]], Metrics]:
         """Generates a plan choosing the best skeletons based on a given
         refinement cost estimator when using task planning only (without sim)."""
-        from predicators.planning import task_plan_grounding, task_plan, \
-            _SkeletonSearchTimeout
+        from predicators.planning import (
+            PlanningFailure,
+            PlanningTimeout,
+            run_task_plan_once,
+            task_plan_grounding,
+            task_plan,
+            _SkeletonSearchTimeout,
+        )
         from predicators import utils as pred_utils
         from predicators.settings import CFG
         from itertools import islice
-        
-        # Generate multiple skeletons and rank them using refinement_estimator
+
+        # FD mode: use run_task_plan_once for a single skeleton
+        # Supports fdopt, fdsat, fdopt-costs, fdsat-costs
+        fd_planners = ("fdopt", "fdsat", "fdopt-costs", "fdsat-costs")
+        if CFG.sesame_task_planner in fd_planners:
+            ground_op_costs = None
+            default_cost = 1.0
+            cost_precision = 3
+            if CFG.sesame_task_planner.endswith("-costs"):
+                init_atoms = pred_utils.abstract(task.init, preds)
+                objects = set(task.init)
+                ground_nsrts, _ = task_plan_grounding(
+                    init_atoms, objects, nsrts, allow_noops=False)
+                region_probs_by_obj = getattr(
+                    CFG, "fd_region_probs_by_obj", None) or {}
+                region_probs_default = getattr(
+                    CFG, "fd_region_probs_default", None) or {}
+                cost_by_name = getattr(
+                    CFG, "fd_ground_op_cost_by_name", None) or {}
+                if region_probs_by_obj or region_probs_default:
+                    ground_op_costs = {
+                        gn.op: _compute_ground_op_cost_from_region_probs(
+                            gn, region_probs_by_obj, region_probs_default,
+                            default_cost)
+                        for gn in ground_nsrts
+                    }
+                else:
+                    ground_op_costs = {
+                        gn.op: _lookup_ground_op_cost(
+                            gn, cost_by_name, default_cost)
+                        for gn in ground_nsrts
+                    }
+            try:
+                plan, atoms_seq, metrics = run_task_plan_once(
+                    task,
+                    nsrts,
+                    preds,
+                    self._types,
+                    timeout,
+                    seed,
+                    task_planning_heuristic=self._task_planning_heuristic,
+                    max_horizon=float(CFG.horizon),
+                    ground_op_costs=ground_op_costs,
+                    default_cost=default_cost,
+                    cost_precision=cost_precision,
+                    **kwargs)
+            except PlanningFailure as e:
+                raise ApproachFailure(e.args[0], e.info)
+            except PlanningTimeout as e:
+                raise ApproachTimeout(e.args[0], e.info)
+            skeleton_data = (plan, atoms_seq, metrics)
+            cost = self._refinement_estimator.get_cost(task, plan, atoms_seq)
+            proposed_skeletons = [skeleton_data]
+            sorted_skeletons = [(skeleton_data, cost)]
+            self._log_skeletons(
+                task, proposed_skeletons, sorted_skeletons,
+                self._refinement_estimator)
+            logging.info("FD skeleton (single): %d steps, refinement cost=%.4f",
+                         len(plan), cost)
+            return plan, atoms_seq, metrics
+
+        # A* mode: generate multiple skeletons and rank by refinement_estimator
         init_atoms = pred_utils.abstract(task.init, preds)
         goal = task.goal
         objects = set(task.init)

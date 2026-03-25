@@ -492,12 +492,14 @@ def kitchen_oracle_estimator_per_object(
         except (ValueError, KeyError):
             pass
 
-        # Second: use the KitchenEnv-level found status via _ObjectFound_holds,
-        # which also includes a real-state fallback if needed.
-        try:
-            return KitchenEnv._ObjectFound_holds(initial_state, [obj])
-        except Exception:
-            return False
+        # Second: use the KitchenEnv-level predicate over (obj, container).
+        # Even though this estimator only needs "found anywhere", we still
+        # query per-container to match the new predicate signature.
+        for container_name in container_names:
+            container = KitchenEnv.object_name_to_object(container_name)
+            if KitchenEnv._ObjectFound_holds(initial_state, [obj, container]):
+                return True
+        return False
     
     total_cost = 0.0
     
@@ -544,14 +546,12 @@ def kitchen_oracle_estimator_per_object(
                                 next_obj = next_nsrt.objects[1]
                                 next_container_name = next_obj.name if hasattr(next_obj, 'name') else str(next_obj)
                                 if next_container_name == container_name:
-                                    is_observe_sequence = True
-                                    sequence_length = 2
                                     open_cost = BASE_COST_OPEN
-                                    
-                                    # Check for observe action
+                                    # Check for observe action (including ObserveContainer* variants).
                                     if i + 2 < len(skeleton):
                                         observe_nsrt = skeleton[i + 2]
-                                        if (observe_nsrt.name == "ObserveContainer"):
+                                        if observe_nsrt.name.startswith("ObserveContainer"):
+                                            is_observe_sequence = True
                                             observe_cost = BASE_COST_OBSERVE
                                             sequence_length = 3
                     
@@ -561,73 +561,60 @@ def kitchen_oracle_estimator_per_object(
                         # ĉ = C / p_a
                         base_cost = move_cost + open_cost + observe_cost
 
-                        # Try to infer which object this observe sequence is for,
-                        # by looking ahead in the NSRT plan for a per-object NSRT.
+                        # New logic:
+                        # Determine which objects are optimistic-found by this specific
+                        # ObserveContainer* NSRT variant, then compute success
+                        # probability from those objects' per-region extraction priors.
+                        #
+                        # Example: ObserveContainerSpongeMug ->
+                        # found_objs=[sponge,mug], success_prob = p(sponge|region) * p(mug|region)
+                        observe_nsrt = skeleton[i + 2]
+                        found_obj_names: List[str] = []
+                        for atom in observe_nsrt.add_effects:
+                            # We only care about ObjectFound(...) add-effects.
+                            if getattr(atom.predicate, "name", None) == "ObjectFound":
+                                if atom.objects:
+                                    found_obj_names.append(atom.objects[0].name)
+                        # De-duplicate while preserving deterministic order.
+                        found_obj_names = sorted(set(found_obj_names))
 
-                        def _infer_target_object_name(start_idx: int) -> str | None:
-                            """Look ahead from start_idx to infer which object is searched.
-
-                            We no longer rely on NSRT names being object-specific.
-                            Instead, we look for the first ground NSRT whose arguments
-                            include a grippable object (banana/mug/sponge/tea/milk),
-                            and return that object's name.
-                            """
-                            for k in range(start_idx + sequence_length, len(skeleton)):
-                                nsrt_k = skeleton[k]
-                                for obj_k in nsrt_k.objects:
-                                    # Use KitchenEnv.grippable_object_type to test membership
-                                    try:
-                                        if obj_k.is_instance(KitchenEnv.grippable_object_type):
-                                            return getattr(obj_k, "name", str(obj_k))
-                                    except Exception:
-                                        continue
-                            return None
-
-                        target_obj_name = _infer_target_object_name(i)
-
-                        # If the inferred target object has already been found
-                        # according to the current high-level state, treat this
-                        # observe sequence as having success probability 1.0
-                        # (i.e., no inflation from the diffusion prior).
-                        if target_obj_name and _is_object_found(target_obj_name):
-                            success_prob = 1.0
-                            logger.info(
-                                f"[step {i}] Observe sequence at container={container_name}, "
-                                f"target_obj={target_obj_name} (already FOUND) -> "
-                                f"success_prob=1.0 (override diffusion prior)"
-                            )
+                        if container_name in container_to_region:
+                            region_name = container_to_region[container_name]
                         else:
-                            # Select the appropriate region_probs for this object,
-                            # with fallback to default merged probabilities.
-                            if target_obj_name and target_obj_name in region_probs_by_obj:
-                                per_obj_region_probs = region_probs_by_obj[target_obj_name]
-                                logger.info(
-                                    f"[step {i}] Observe sequence at container={container_name}, "
-                                    f"target_obj={target_obj_name} uses per-object region_probs."
-                                )
-                            else:
-                                per_obj_region_probs = region_probs_default
-                                logger.info(
-                                    f"[step {i}] Observe sequence at container={container_name}, "
-                                    f"target_obj={target_obj_name} uses DEFAULT region_probs."
-                                )
+                            region_name = "UNKNOWN"
 
-                            # Get success probability for this container from the
-                            # (possibly per-object) region_probs.
-                            if container_name in container_to_region:
-                                region_name = container_to_region[container_name]
-                                success_prob = per_obj_region_probs.get(
-                                    region_name, DEFAULT_SUCCESS_PROBABILITY
-                                )
+                        elem_probs: List[float] = []
+                        for obj_name in found_obj_names:
+                            if _is_object_found(obj_name):
+                                # If already found in the high-level state, use p=1
+                                # for that element to avoid inflating cost incorrectly.
+                                elem_prob = 1.0
                             else:
-                                region_name = "UNKNOWN"
-                                success_prob = DEFAULT_SUCCESS_PROBABILITY
+                                # Use per-object extraction probabilities when available.
+                                if obj_name in region_probs_by_obj:
+                                    elem_prob = region_probs_by_obj[obj_name].get(
+                                        region_name, DEFAULT_SUCCESS_PROBABILITY)
+                                else:
+                                    # Fallback to merged/default extraction distribution.
+                                    elem_prob = region_probs_default.get(
+                                        region_name, DEFAULT_SUCCESS_PROBABILITY)
+                            elem_probs.append(elem_prob)
 
-                            logger.info(
-                                f"[step {i}] Observe sequence at container={container_name}, "
-                                f"region={region_name}, target_obj={target_obj_name}, "
-                                f"success_prob={success_prob:.6f}, base_cost={base_cost:.4f}"
-                            )
+                        # Combine multiple elements into a single success probability.
+                        # (Assume independence across the optimistic-found elements.)
+                        if not elem_probs:
+                            success_prob = DEFAULT_SUCCESS_PROBABILITY
+                        else:
+                            success_prob = 1.0
+                            for p in elem_probs:
+                                success_prob *= p
+
+                        logger.info(
+                            f"[step {i}] Observe sequence at container={container_name}, "
+                            f"region={region_name}, found_objs={found_obj_names}, "
+                            f"elem_probs={[round(p, 6) for p in elem_probs]}, "
+                            f"success_prob={success_prob:.6f}, base_cost={base_cost:.4f}"
+                        )
                         
                         # Calculate determinized cost
                         if success_prob < EPSILON:
@@ -675,7 +662,7 @@ def kitchen_oracle_estimator_per_object(
                     f"base_cost={BASE_COST_OPEN:.4f}, cumulative_total_cost={total_cost}"
                 )
         
-        elif nsrt_name in ["ObserveContainer"]:
+        elif nsrt_name.startswith("ObserveContainer"):
             # Only add cost if not already processed as part of observe sequence
             # Observe cost is 0 as per user's design
             if i not in processed_indices:

@@ -990,7 +990,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             current_quat = (gqw, gqx, gqy, gqz)
             home_x, home_y, home_z = cls.home_pos
 
-            obj_found = KitchenEnv._ObjectFound_holds(state, [obj])
+            obj_found = KitchenEnv._ObjectFound_holds(state, [obj, obj_place])
             if not obj_found:
                 print(f"obj not found: {obj.name}")
                 raise ApproachFailure(f"plan exhausted")

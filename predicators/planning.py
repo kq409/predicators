@@ -1210,7 +1210,10 @@ def _sesame_plan_with_fast_downward(
     assert "FD_EXEC_PATH" in os.environ, \
         "Please follow the instructions in the docstring of this method!"
     fd_exec_path = os.environ["FD_EXEC_PATH"]
-    exec_str = os.path.join(fd_exec_path, "fast-downward.py")
+    fd_script = os.path.join(fd_exec_path, "fast-downward.py")
+    # Use current Python interpreter to avoid "Python was not found" on Windows
+    # (shebang doesn't work when running .py directly; Store alias can intercept)
+    exec_str = f'"{sys.executable}" "{fd_script}"'
     start_time = time.perf_counter()
     sas_file = generate_sas_file_for_fd(task, nsrts, predicates, types,
                                         timeout, timeout_cmd, alias_flag,
@@ -1295,7 +1298,8 @@ def run_task_plan_once(
                 "Skeleton produced by A-star exceeds horizon!")
     elif "fd" in CFG.sesame_task_planner:  # pragma: no cover
         fd_exec_path = os.environ["FD_EXEC_PATH"]
-        exec_str = os.path.join(fd_exec_path, "fast-downward.py")
+        fd_script = os.path.join(fd_exec_path, "fast-downward.py")
+        exec_str = f'"{sys.executable}" "{fd_script}"'
         timeout_cmd = "gtimeout" if sys.platform == "darwin" \
             else "timeout"
         # Run Fast Downward followed by cleanup. Capture the output.

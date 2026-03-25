@@ -441,7 +441,11 @@ class GlobalSettings:
     vlm_open_loop_use_training_demos = False
 
     # SeSamE parameters
-    sesame_task_planner = "astar"  # "astar" or "fdopt" or "fdsat"
+    sesame_task_planner = "astar"  # "astar" or "fdopt" or "fdsat" or "fdopt-costs" or "fdsat-costs"
+    # When using fdopt-costs/fdsat-costs: cost for FD. None = unit cost.
+    # Keys: "Name" (all groundings) or "name obj1 obj2" (specific params).
+    # Example: {"ObserveContainerSponge hinge2 sponge": 1.5, "ObserveContainerSponge slide sponge": 2.0}
+    fd_ground_op_cost_by_name = None  # Optional[Dict[str, float]]
     sesame_task_planning_heuristic = "lmcut"
     sesame_allow_noops = True  # recommended to keep this False if using replays
     sesame_check_expected_atoms = True
