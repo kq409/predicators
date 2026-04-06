@@ -40,6 +40,7 @@ class CogMan:
         self._current_env_task: Optional[EnvironmentTask] = None
         self._episode_state_history: List[State] = []
         self._episode_action_history: List[Action] = []
+        self._episode_option_switch_history: List[_Option] = []
         self._episode_images: Video = []
         self._episode_num = -1
 
@@ -56,6 +57,7 @@ class CogMan:
             self._approach.get_execution_monitoring_info())
         self._episode_state_history = [task.init]
         self._episode_action_history = []
+        self._episode_option_switch_history = []
         self._episode_images = []
         if CFG.make_cogman_videos:
             imgs = self._perceiver.render_mental_images(task.init, env_task)
@@ -167,6 +169,14 @@ class CogMan:
         return LowLevelTrajectory(self._episode_state_history,
                                   self._episode_action_history)
 
+    def get_current_action_history(self) -> List[Action]:
+        """Expose current episode action history without trajectory wrapper."""
+        return list(self._episode_action_history)
+
+    def get_current_option_switch_history(self) -> List[_Option]:
+        """Expose option switch events from current episode."""
+        return list(self._episode_option_switch_history)
+
     def _reset_policy(self, task: Task) -> None:
         """Call the approach or use the override policy."""
         if self._override_policy is not None:
@@ -227,6 +237,7 @@ def run_episode_and_get_observations(
                 if act.has_option() and act.get_option() != curr_option:
                     curr_option = act.get_option()
                     metrics["num_options_executed"] += 1
+                    cogman._episode_option_switch_history.append(curr_option)
                     # Add real-time output
                     print(f"Executing option: {curr_option.name}")
                     if hasattr(curr_option, 'objects') and curr_option.objects:

@@ -2,9 +2,6 @@
 
 from typing import List, Set, Dict
 from pathlib import Path
-import os
-import logging
-from datetime import datetime
 
 from predicators.envs import BaseEnv
 from predicators.envs.kitchen import KitchenEnv
@@ -16,34 +13,6 @@ from predicators.structs import GroundAtom, State, Task, _GroundNSRT
 # Repository root (diffusion_behavior) and experiment results directory
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPERIMENT_RESULTS_DIR = _REPO_ROOT / "experiment_results"
-
-# Directory for detailed refinement cost logs (under experiment_results/)
-_COST_LOG_DIR = EXPERIMENT_RESULTS_DIR / "skeleton_cost_logs"
-_COST_LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _get_cost_logger() -> logging.Logger:
-    """Return a logger that writes detailed skeleton cost information.
-
-    Log file lives under experiment_results/skeleton_cost_logs/, with one file
-    per run (timestamped). We keep the logger global so multiple calls within a
-    single run share the same handler.
-    """
-    logger = logging.getLogger("oracle_refinement_cost")
-    if logger.handlers:
-        return logger
-
-    logger.setLevel(logging.DEBUG)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = _COST_LOG_DIR / f"skeleton_cost_{timestamp}.log"
-    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-    formatter = logging.Formatter("%(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.propagate = False  # avoid duplicating to root logger
-    logger.info(f"Skeleton cost log file: {log_path}")
-    return logger
-
 
 class OracleRefinementEstimator(BaseRefinementEstimator):
     """A refinement cost estimator that returns a hand-designed cost
@@ -429,14 +398,6 @@ def kitchen_oracle_estimator_per_object(
     the diffusion-based prior. This avoids incorrectly assigning infinite cost
     when a skeleton revisits containers after an object has already been found.
 
-    This function also logs detailed cost computation for each skeleton step to
-    experiment_results/skeleton_cost_logs/*.log, including:
-      - per-step base cost
-      - whether the step is part of an observe sequence
-      - inferred target object for observe sequences
-      - success probability used (if any)
-      - determinized cost contribution
-      - cumulative total cost
     """
     # Container names that can be observed
     container_names = {"hinge2", "slide", "microhandle"}
@@ -459,11 +420,6 @@ def kitchen_oracle_estimator_per_object(
     
     # Small epsilon to avoid division by zero
     EPSILON = 1e-6
-
-    logger = _get_cost_logger()
-    logger.info("=" * 80)
-    logger.info("Kitchen oracle refinement cost (per-object) debug log")
-    logger.info(f"Num skeleton steps: {len(skeleton)}")
 
     def _is_object_found(obj_name: str) -> bool:
         """Check whether a given object has already been found using state.
@@ -609,13 +565,6 @@ def kitchen_oracle_estimator_per_object(
                             for p in elem_probs:
                                 success_prob *= p
 
-                        logger.info(
-                            f"[step {i}] Observe sequence at container={container_name}, "
-                            f"region={region_name}, found_objs={found_obj_names}, "
-                            f"elem_probs={[round(p, 6) for p in elem_probs]}, "
-                            f"success_prob={success_prob:.6f}, base_cost={base_cost:.4f}"
-                        )
-                        
                         # Calculate determinized cost
                         if success_prob < EPSILON:
                             determinized_cost = float('inf')
@@ -623,62 +572,33 @@ def kitchen_oracle_estimator_per_object(
                             determinized_cost = base_cost / max(success_prob, EPSILON)
                         
                         total_cost += determinized_cost
-                        logger.info(
-                            f"[step {i}] Observe sequence determinized_cost={determinized_cost}, "
-                            f"cumulative_total_cost={total_cost}"
-                        )
-                        
                         # Mark all NSRTs in this sequence as processed
                         for j in range(i, min(i + sequence_length, len(skeleton))):
                             processed_indices.add(j)
                     else:
                         # Not part of observe sequence, use base cost
                         total_cost += BASE_COST_MOVE
-                        logger.info(
-                            f"[step {i}] {nsrt_name} (non-observe container move, objects={obj_names_str}) "
-                            f"base_cost={BASE_COST_MOVE:.4f}, cumulative_total_cost={total_cost}"
-                        )
                 else:
                     # Not a container, use base cost
                     total_cost += BASE_COST_MOVE
-                    logger.info(
-                        f"[step {i}] {nsrt_name} (non-container MoveToPreTurnOn, objects={obj_names_str}) "
-                        f"base_cost={BASE_COST_MOVE:.4f}, cumulative_total_cost={total_cost}"
-                    )
             else:
                 total_cost += BASE_COST_MOVE
-                logger.info(
-                    f"[step {i}] {nsrt_name} (MoveToPreTurnOn without objects) "
-                    f"base_cost={BASE_COST_MOVE:.4f}, cumulative_total_cost={total_cost}"
-                )
         
         elif nsrt_name in ["PushOpenHingeDoor", "PushOpen"]:
             # Only add cost if not already processed as part of observe sequence
             # PushOpen is used for slide container, PushOpenHingeDoor for other containers
             if i not in processed_indices:
                 total_cost += BASE_COST_OPEN
-                logger.info(
-                    f"[step {i}] {nsrt_name} (standalone open, objects={obj_names_str}) "
-                    f"base_cost={BASE_COST_OPEN:.4f}, cumulative_total_cost={total_cost}"
-                )
         
         elif nsrt_name.startswith("ObserveContainer"):
             # Only add cost if not already processed as part of observe sequence
             # Observe cost is 0 as per user's design
             if i not in processed_indices:
                 total_cost += BASE_COST_OBSERVE
-                logger.info(
-                    f"[step {i}] {nsrt_name} (standalone observe, objects={obj_names_str}) "
-                    f"base_cost={BASE_COST_OBSERVE:.4f}, cumulative_total_cost={total_cost}"
-                )
         
         else:
             # Other actions use base cost
             total_cost += BASE_COST_OTHER
-            logger.info(
-                f"[step {i}] {nsrt_name} (other action, objects={obj_names_str}) "
-                f"base_cost={BASE_COST_OTHER:.4f}, cumulative_total_cost={total_cost}"
-            )
         
         i += 1
 

@@ -1,6 +1,6 @@
 """Ground-truth options for the Kitchen environment."""
 
-from typing import ClassVar, Dict, Sequence, Set
+from typing import ClassVar, Dict, Optional, Sequence, Set
 
 import numpy as np
 from gym.spaces import Box
@@ -80,6 +80,40 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         options: Set[ParameterizedOption] = set()
 
+        def _no_op_action() -> Action:
+            return Action(np.zeros(7, dtype=np.float32))
+
+        def _get_current_env() -> Optional[KitchenEnv]:
+            return getattr(KitchenEnv, "_current_env", None)
+
+        def _teleport_object(obj: Object, target_xyz: Array) -> None:
+            env = _get_current_env()
+            if env is None:
+                return
+            # Keep a fixed identity orientation for direct object teleports.
+            euler = (0.0, 0.0, 0.0)
+            quat = euler2quat(euler)
+            env.set_joint(obj.name, np.concatenate([np.array(target_xyz), quat]))
+
+        def _set_container_open_closed(obj: Object, open_container: bool) -> None:
+            env = _get_current_env()
+            if env is None:
+                return
+            if obj.name == "microhandle":
+                # Microwave door joint is named "microwave" and is a hinge
+                # with valid range [-2.094, 0], so opening should use a
+                # negative angle.
+                value = -1.57 if open_container else 0.0
+                env.set_joint("microwave", value)
+            elif obj.name == "hinge2":
+                value = -1.57 if open_container else 0.0
+                env.set_joint("right_hinge_cabinet", value)
+            # elif obj.name == "hinge1":
+            #     env.set_joint("right_hinge_cabinet", 1.0 if open_container else 0.0)
+            elif obj.name == "slide":
+                value = 0.45 if open_container else 0.0
+                env.set_joint("slide_cabinet", value)
+
         # MoveTo
         def _MoveTo_initiable(state: State, memory: Dict,
                               objects: Sequence[Object],
@@ -149,118 +183,13 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         def _MoveTo_policy(state: State, memory: Dict,
                            objects: Sequence[Object], params: Array) -> Action:
-            del params  # unused
-            origin = None
-            destination = None
-            obj_place = None
-            if len(objects) == 3:
-                gripper, obj, obj_place = objects[0], objects[1], objects[2]
-            elif len(objects) == 4:
-                gripper, obj, origin, destination = objects[0], objects[1], objects[2], objects[3]
-            else:
-                gripper, obj = objects[0], objects[1]
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            gqw = state.get(gripper, "qw")
-            gqx = state.get(gripper, "qx")
-            gqy = state.get(gripper, "qy")
-            gqz = state.get(gripper, "qz")
-            ox = state.get(obj, "x")
-            oy = state.get(obj, "y")
-            oz = state.get(obj, "z")
-            if origin is not None:
-                origin_x = KitchenEnv.obj_name_to_xyz[origin.name][0]
-                origin_y = KitchenEnv.obj_name_to_xyz[origin.name][1]
-                origin_z = KitchenEnv.obj_name_to_xyz[origin.name][2]
-            if destination is not None:
-                destination_x = KitchenEnv.obj_name_to_xyz[destination.name][0]
-                destination_y = KitchenEnv.obj_name_to_xyz[destination.name][1]
-                destination_z = KitchenEnv.obj_name_to_xyz[destination.name][2]
-
-            current_euler = quat2euler([gqw, gqx, gqy, gqz])
-            way_pos, way_quat = memory["waypoints"][0]
-            # print(f"MoveTo waypoints: {way_pos}, {way_quat}")
-            # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
-            distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(way_pos))
-            distance_obj = np.linalg.norm(np.array([gx, gy, gz]) - np.array([ox, oy, oz]))
-
-            if len(objects) == 2:
-                # tol = cls.moveto_tol
-                tol = 0.015
-            elif len(objects) == 3:
-                tol = 0.05
-            else:
-                tol = 0.05
-            # print(f"\rCurrent position: ({gx:.4f}, {gy:.4f}, {gz:.4f}) | Waypoint position: {way_pos} | Distance: {distance:.4f} | Distance to object: {distance_obj:.4f}", end="", flush=True)
-            if np.allclose((gx, gy, gz), way_pos, atol=tol):
-                memory["waypoints"].pop(0)
-                way_pos, way_quat = memory["waypoints"][0]
-            dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
-            target_euler = quat2euler(way_quat)
-            droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
-
-
-            if len(objects) == 2:
-                grip = 0.0
-            elif len(objects) == 3:
-                grip = 1.0
-            else:
-                grip = 0.0
-
-            if len(objects) == 3:
-                # For len(objects) == 3, normalize the motion part separately
-                motion_arr = np.array([dx, dy, dz, droll, dpitch, dyaw],
-                                      dtype=np.float32)
-                action_mag = np.linalg.norm(motion_arr)
-                if action_mag > cls.max_delta_mag:
-                    scale = cls.max_delta_mag / action_mag
-                    motion_arr = motion_arr * scale
-                arr = np.concatenate(
-                    [motion_arr, np.array([grip], dtype=np.float32)])
-            else:
-                arr = np.array([dx, dy, dz, droll, dpitch, dyaw, grip],
-                               dtype=np.float32)
-                action_mag = np.linalg.norm(arr)
-                if action_mag > cls.max_delta_mag:
-                    scale = cls.max_delta_mag / action_mag
-                    arr = arr * scale
-            # print(f"Action magnitude: {np.linalg.norm(arr)}")
-            # print(f"Action: {arr}")
-            return Action(arr)
+            del state, memory, objects, params  # unused
+            return _no_op_action()
 
         def _MoveTo_terminal(state: State, memory: Dict,
                              objects: Sequence[Object], params: Array) -> bool:
-            del params  # unused
-            # Change the tolerance for different objects
-            gripper, obj = objects[0], objects[1]
-            if obj.name == "microhandle":
-                tol = 0.015
-                # tol = 0.01
-            elif obj.name == "hinge2":
-                tol = 0.03
-            elif obj.name == "slide":
-                tol = 0.1
-            else:
-                tol = cls.moveto_tol
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-
-            waypoint_pos = memory["waypoints"][0][0]
-            distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(waypoint_pos))
-            
-            # print(f"MoveToPreTurnOn Debug Info:")
-            # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
-            # print(f"Target position: ({waypoint_pos[0]:.4f}, {waypoint_pos[1]:.4f}, {waypoint_pos[2]:.4f})")
-            # print(f"Distance: {distance:.4f}")
-            # print(f"Tolerance: {tol}")
-            # print(f"Is reached: {np.allclose((gx, gy, gz), target_pos, atol=cls.moveto_tol)}")
-
-
-            return np.allclose((gx, gy, gz),
-                               memory["waypoints"][-1][0],
-                               atol=tol)
+            del state, memory, objects, params  # unused
+            return True
 
         # Create copies just to preserve one-to-one-ness with NSRTs.
         for suffix in ["PreTurnOn", "PreTurnOff"]:
@@ -350,14 +279,16 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _PushObjOnObjForward_policy(state: State, memory: Dict,
                                         objects: Sequence[Object],
                                         params: Array) -> Action:
-            del state, memory, objects  # unused
-            # The parameter is a push direction angle with respect to y.
-            push_angle = params[0]
-            unit_y, unit_x = np.cos(push_angle), np.sin(push_angle)
-            dx = unit_x * cls.max_push_mag
-            dy = unit_y * cls.max_push_mag
-            arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            return Action(arr)
+            del state, memory, params  # unused
+            _, obj, obj2 = objects
+            target_xyz = np.array([
+                KitchenEnv.obj_name_to_xyz[obj2.name][0],
+                KitchenEnv.obj_name_to_xyz[obj2.name][1],
+                KitchenEnv.obj_name_to_xyz[obj2.name][2],
+            ],
+                                  dtype=np.float32)
+            _teleport_object(obj, target_xyz)
+            return _no_op_action()
 
         def _PushObjOnObjForward_terminal(state: State, memory: Dict,
                                           objects: Sequence[Object],
@@ -438,14 +369,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _PullKettle_policy(state: State, memory: Dict,
                                objects: Sequence[Object],
                                params: Array) -> Action:
-            del state, memory, objects  # unused
-            # The parameter is a push direction angle with respect to y.
-            pull_angle = params[0]
-            unit_y, unit_x = np.cos(pull_angle), np.sin(pull_angle)
-            dx = unit_x * cls.max_push_mag / 4.0
-            dy = unit_y * cls.max_push_mag / 4.0
-            arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            return Action(arr)
+            return _PushObjOnObjForward_policy(state, memory, objects, params)
 
         def _PullKettle_terminal(state: State, memory: Dict,
                                  objects: Sequence[Object],
@@ -661,124 +585,17 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _PushOpen_initiable(state: State, memory: Dict,
                                 objects: Sequence[Object],
                                 params: Array) -> bool:
-            
-            gripper = objects[0]
+            del state, memory, params  # unused
             obj = objects[1]
-            gx, gy, gz = state.get(gripper, "x"), state.get(gripper, "y"), state.get(gripper, "z")
-            memory["current_pose"] = (gx, gy, gz)
-            if obj.name == "microhandle":
-                memory["target_quat"] = prepullmicro_quat
-                memory["waypoints"] = [
-                    ((gx + 0.1, gy - 0.2, gz), prepullmicro_quat),
-                    # ((gx + 0.1, gy - 0.05, gz), prepullmicro_quat),
-                    ((gx + 0.1, gy - 0.025, gz), prepullmicro_quat),
-                    # ((gx, gy, gz), prepullmicro_quat),
-                ]
-                print(f"waypoints: {memory['waypoints']}")
-                memory["flag"] = 0
-            elif obj.name == "hinge2":
-                memory["target_quat"] = prepullhinge_quat
-            elif obj.name == "slide":
-                memory["target_quat"] = angled_quat
-            # if obj.name == "microhandle":
-            #     env = getattr(KitchenEnv, "_current_env", None)
-            #     if env is not None:
-            #         env.set_joint("microwave", -1.57)
-            #         print("Set microwave qpos to -1.57)")
+            _set_container_open_closed(obj, open_container=True)
             return True
 
         def _PushOpen_policy(state: State, memory: Dict,
                              objects: Sequence[Object],
                              params: Array) -> Action:
-            # The parameter is an angular target offset in [0, π/2].
-            push_angle = params[0]
-            gripper = objects[0]
-            gx, gy, gz = state.get(gripper, "x"), state.get(gripper, "y"), state.get(gripper, "z")
-            gqw = state.get(gripper, "qw")
-            gqx = state.get(gripper, "qx")
-            gqy = state.get(gripper, "qy")
-            gqz = state.get(gripper, "qz")
-            current_euler = quat2euler([gqw, gqx, gqy, gqz])
-            target_quat = memory["target_quat"]
-            target_euler = quat2euler(target_quat)
-            droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
-            _, _, dz = np.subtract((gx, gy, gz), memory["current_pose"])
-            # print(f"droll: {droll}, dpitch: {dpitch}, dyaw: {dyaw}")
-            # print(f"gx, gy, gz: {gx}, {gy}, {gz}")
-
-            if objects[1].name == "hinge2":
-                unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
-                dx = unit_x * cls.max_push_mag / 2.0
-                dy = unit_y * cls.max_push_mag / 2.0
-                arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)
-                hinge2_x = state.get(objects[1], "x")
-                # print(f"hinge2 angle: {hinge2_x}")
-            elif objects[1].name == "microhandle":
-                if memory["flag"] == 0:
-                    # print(f"flag: {memory['flag']}")
-                    if gx <= -0.06:
-                        memory["flag"] = 1
-                        print("set flag to 1")
-                        memory["waypoints"] = [
-                            ((gx + 0.1, gy - 0.1, gz), prepullmicro_quat),
-                        ] + memory["waypoints"]
-                        arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                                dtype=np.float32)
-                    else:
-                        unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
-                        dx = unit_x * cls.max_push_mag / 2.0
-                        dy = unit_y * cls.max_push_mag / 2.0
-                        arr = np.array([dx, dy, -0.01, droll, dpitch, dyaw, -1.0],
-                                dtype=np.float32)
-                elif memory["flag"] == 1:
-                    # print(f"flag: {memory['flag']}")
-                    if np.allclose((gx, gy, gz), memory["waypoints"][-1][0], atol=0.0125):
-                        memory["flag"] = 2
-                        print("set flag to 2")
-                        arr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                                dtype=np.float32)
-                    else:
-                        way_pos, way_quat = memory["waypoints"][0]
-                        if np.allclose((gx, gy, gz), way_pos, atol=0.0125):
-                            memory["waypoints"].pop(0)
-                            way_pos, way_quat = memory["waypoints"][0]
-                        dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
-                        target_euler = quat2euler(way_quat)
-                        droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
-                        arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
-                                dtype=np.float32)
-                        action_mag = np.linalg.norm(arr)
-                        if action_mag > cls.max_delta_mag:
-                            scale = cls.max_delta_mag / action_mag
-                            arr = arr * scale
-                        # print(f"arr: {arr}")
-                    # else:
-                    #     dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
-                    #     target_euler = quat2euler(way_quat)
-                    #     droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
-                    #     arr = np.array([dx, dy, dz, droll, dpitch, dyaw, 0.0],
-                    #             dtype=np.float32)
-                elif memory["flag"] == 2:
-                    # print(f"flag: {memory['flag']}")
-                    push_angle = -7 * np.pi / 8
-                    unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
-                    dx = unit_x * cls.max_push_mag / 2.0
-                    dy = unit_y * cls.max_push_mag / 2.0
-                    arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0],
-                            dtype=np.float32)
-            elif objects[1].name == "slide":
-                unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
-                dx = unit_x * cls.max_push_mag / 2.0
-                dy = unit_y * cls.max_push_mag / 2.0
-                arr = np.array([dx, dy, 0.01, 0.0, 0.0, 0.0, -1.0],
-                                dtype=np.float32)
-            
-            # print(f"PushOpen action: {arr.tolist()}")
-            # print(f"Object angle: {state.get(objects[1], 'angle')}")
-            # print(f"Object open threshold: {KitchenEnv.hinge_open_thresh}")
-            # print(f"Object x: {state.get(objects[1], 'x')}")
-            # print(f"Object x threshold: {-0.25}")
-            return Action(arr)
+            del state, memory, params  # unused
+            _set_container_open_closed(objects[1], open_container=True)
+            return _no_op_action()
 
         def _PushOpen_terminal(state: State, memory: Dict,
                                objects: Sequence[Object],
@@ -815,14 +632,9 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _PushClose_policy(state: State, memory: Dict,
                               objects: Sequence[Object],
                               params: Array) -> Action:
-            del state, memory, objects  # unused
-            # The parameter is a push direction angle with respect to x.
-            push_angle = params[0]
-            unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
-            dx = unit_x * cls.max_push_mag
-            dy = unit_y * cls.max_push_mag
-            arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            return Action(arr)
+            del state, memory, params  # unused
+            _set_container_open_closed(objects[1], open_container=False)
+            return _no_op_action()
 
         def _PushClose_terminal(state: State, memory: Dict,
                                 objects: Sequence[Object],
@@ -861,34 +673,13 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         def _MoveToObservePosition_policy(state: State, memory: Dict,
                                         objects: Sequence[Object], params: Array) -> Action:
-            del params  # unused
-            gripper = objects[0]
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            way_pos, way_quat = memory["waypoints"][0]
-            if np.allclose((gx, gy, gz), way_pos, atol=cls.moveto_tol):
-                memory["waypoints"].pop(0)
-                way_pos, way_quat = memory["waypoints"][0]
-            dx, dy, dz = np.subtract(way_pos, (gx, gy, gz))
-            arr = np.array([dx, dy, dz, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            action_mag = np.linalg.norm(arr)
-            if action_mag > cls.max_delta_mag:
-                scale = cls.max_delta_mag / action_mag
-                arr = arr * scale
-            return Action(arr)
+            del state, memory, objects, params  # unused
+            return _no_op_action()
 
         def _MoveToObservePosition_terminal(state: State, memory: Dict,
                                           objects: Sequence[Object], params: Array) -> bool:
-            del params  # unused
-            gripper, obj = objects
-            tol = cls.moveto_tol
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            return np.allclose((gx, gy, gz),
-                               memory["waypoints"][-1][0],
-                               atol=tol)
+            del state, memory, objects, params  # unused
+            return True
 
         MoveToObservePosition = ParameterizedOption(
             "MoveToObservePosition",
@@ -1004,9 +795,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 target_quat = angled_quat
                 memory["waypoints"] = [
                     (cls.home_pos, angled_quat),
-                    ((ox + dx, oy + dy - 0.25, oz + dz), angled_quat),
-                    ((ox + dx, oy + dy - 0.15, oz + dz), angled_quat),
-                    # ((ox + dx, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
+                    ((ox + dx, oy + dy - 0.25, oz + dz + 0.1), angled_quat),
                     ((ox + dx, oy + dy, oz + dz), angled_quat),
                     (target_pose, angled_quat),
                 ]
@@ -1040,36 +829,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         def _MoveToPrePickUp_terminal(state: State, memory: Dict,
                                       objects: Sequence[Object], params: Array) -> bool:
-            del params  # unused
-            # Change the tolerance for different objects
-            gripper, obj, obj_place = objects
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            ox = state.get(obj, "x")
-            oy = state.get(obj, "y")
-            oz = state.get(obj, "z")
-            
-            
-            tol = 0.05
-            if obj_place.name == "hinge2":
-                tol = 0.05
-                if obj.name == "sponge":
-                    tol = 0.07
-            elif obj_place.name == "microhandle":
-                # tol = 0.2
-                tol = 0.05
-            
-            # print(f"MoveToPreTurnOn Debug Info:")
-            # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
-            # print(f"Target position: ({waypoint_pos[0]:.4f}, {waypoint_pos[1]:.4f}, {waypoint_pos[2]:.4f})")
-            # print(f"Distance: {distance:.4f}")
-            # print(f"Tolerance: {tol}")
-            # print(f"Is reached: {np.allclose((gx, gy, gz), target_pos, atol=cls.moveto_tol)}")
-
-            return np.allclose((gx, gy, gz),
-                               memory["waypoints"][-1][0],
-                               atol=tol)
+            del state, memory, objects, params  # unused
+            return True
 
         MoveToPrePickUp = ParameterizedOption(
             "MoveToPrePickUp",
@@ -1211,9 +972,6 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             tx = state.get(destination, "x")
             ty = state.get(destination, "y")
             tz = state.get(destination, "z")
-            ox = state.get(obj, "x")
-            oy = state.get(obj, "y")
-            oz = state.get(obj, "z")
             dx, dy, dz = params
             home_x, home_y, home_z = cls.home_pos
             current_pose = (gx, gy, gz)
@@ -1233,31 +991,21 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 target_quat = angled_quat
                 memory["waypoints"] = [
                     ((gx, gy - 0.2, gz + 0.1), current_quat),
-                    ((home_x, home_y, home_z), angled_quat),
+                    ((home_x, home_y, home_z), current_quat),
                     # ((tx + dx, ty + dy, tz + dz), target_quat),
-                    ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
-                    ((tx + dx, ty + dy, tz + dz), angled_quat),
+                    ((tx, ty, tz + 0.1), current_quat),
+                    ((tx + dx, ty + dy, tz + dz), current_quat),
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             elif origin.name == "slide":
                 if destination.name == "sink":
                     target_quat = angled_quat
-                    if ox >= 0.13:
-                        memory["waypoints"] = [
-                        ((gx - 0.03, gy - 0.15, gz+ 0.05), current_quat),
+                    memory["waypoints"] = [
                         ((gx, gy - 0.3, gz + 0.05), current_quat),
-                        (cls.home_pos, angled_quat),
-                        ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
-                        ((tx + dx, ty + dy, tz + dz), angled_quat),
+                        (cls.home_pos, current_quat),
+                        ((tx, ty, tz + 0.1), current_quat),
+                        ((tx + dx, ty + dy, tz + dz), current_quat),
                     ]
-                    else:
-                        memory["waypoints"] = [
-                            ((gx, gy - 0.15, gz+ 0.05), current_quat),
-                            ((gx, gy - 0.3, gz + 0.05), current_quat),
-                            (cls.home_pos, angled_quat),
-                            ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
-                            ((tx + dx, ty + dy, tz + dz), angled_quat),
-                        ]
                     print(f"MoveToTarget waypoints: {memory['waypoints']}")
                 else:
                     # Default waypoints for slide origin with other destinations
@@ -1270,12 +1018,11 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             elif origin.name == "microhandle":
                 target_quat = angled_quat
                 memory["waypoints"] = [
-                    ((gx, gy - 0.1, gz + 0.1), current_quat),
                     ((gx, gy - 0.15, gz + 0.1), current_quat),
-                    ((gx, gy - 0.2, gz + 0.1), down_quat),
-                    (cls.home_pos, angled_quat),
-                    ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
-                    ((tx + dx, ty + dy, tz + dz), angled_quat),
+                    ((gx + 0.1, gy - 0.2, gz + 0.1), down_quat),
+                    (cls.home_pos, init_quat),
+                    ((tx, ty, tz + 0.1), current_quat),
+                    ((tx + dx, ty + dy, tz + dz), current_quat),
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             else:
@@ -1291,27 +1038,29 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
 
         def _MoveToTarget_terminal(state: State, memory: Dict,
                                    objects: Sequence[Object], params: Array) -> bool:
-            del params  # unused
-            gripper, obj, origin, destination = objects
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            tx = state.get(destination, "x")
-            ty = state.get(destination, "y")
-            tz = state.get(destination, "z")
+            del state, memory, objects, params  # unused
+            return True
 
-            waypoint_pos = memory["waypoints"][0][0]
-            distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(waypoint_pos))
-
-            return np.allclose((gx, gy, gz),
-                               memory["waypoints"][-1][0],
-                               atol=0.05)
+        def _MoveToTarget_policy(state: State, memory: Dict,
+                                 objects: Sequence[Object],
+                                 params: Array) -> Action:
+            del state, memory  # unused
+            _, obj, _, destination = objects
+            dx, dy, dz = params
+            target_xyz = np.array([
+                KitchenEnv.obj_name_to_xyz[destination.name][0] + dx,
+                KitchenEnv.obj_name_to_xyz[destination.name][1] + dy,
+                KitchenEnv.obj_name_to_xyz[destination.name][2] + dz,
+            ],
+                                  dtype=np.float32)
+            _teleport_object(obj, target_xyz)
+            return _no_op_action()
 
         MoveToTarget = ParameterizedOption(
             "MoveToTarget",
             types=[gripper_type, grippable_object_type, object_type, object_type],
             params_space=Box(-5, 5, (3, )),
-            policy=_MoveTo_policy,
+            policy=_MoveToTarget_policy,
             initiable=_MoveToTarget_initiable,
             terminal=_MoveToTarget_terminal)
         options.add(MoveToTarget)

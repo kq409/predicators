@@ -79,14 +79,26 @@ class GroundTruthLDLBridgePolicyFactory(abc.ABC):
 def get_gt_options(env_name: str) -> Set[ParameterizedOption]:
     """Create ground truth options for an env."""
     env = get_or_create_env(env_name)
+    matched_factories = []
     for cls in utils.get_all_subclasses(GroundTruthOptionFactory):
         if not cls.__abstractmethods__ and env_name in cls.get_env_names():
-            factory = cls()
-            types = {t.name: t for t in env.types}
-            predicates = {p.name: p for p in env.predicates}
-            options = factory.get_options(env_name, types, predicates,
-                                          env.action_space)
-            break
+            matched_factories.append(cls)
+    if env_name == "kitchen" and len(matched_factories) > 1:
+        use_magic = bool(getattr(CFG, "kitchen_use_magic_options", False))
+        preferred_suffix = ".options_magic" if use_magic else ".options"
+        preferred = [
+            cls for cls in matched_factories
+            if cls.__module__.endswith(preferred_suffix)
+        ]
+        if preferred:
+            matched_factories = preferred
+    for cls in matched_factories:
+        factory = cls()
+        types = {t.name: t for t in env.types}
+        predicates = {p.name: p for p in env.predicates}
+        options = factory.get_options(env_name, types, predicates,
+                                      env.action_space)
+        break
     else:  # pragma: no cover
         raise NotImplementedError("Ground-truth options not implemented for "
                                   f"env: {env_name}")

@@ -7,8 +7,6 @@ attempting to refine them in this order.
 
 import json
 import logging
-import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Set, Tuple
 
@@ -54,8 +52,8 @@ def _compute_ground_op_cost_from_region_probs(
     Only ObserveContainer* costs are adjusted; others use default_cost.
     ObserveContainer*: cost = 1.0 / success_prob (base=1, determinization)."""
     DEFAULT_SUCCESS_PROBABILITY = 1.0 / 3.0
-    EPSILON = 1e-6
-    BASE_COST_OBSERVE = 1.0
+    EPSILON = 1e-2
+    BASE_COST_OBSERVE = 1
     container_to_region = {
         "microhandle": "microwave",
         "hinge2": "right_hinge_cabinet",
@@ -65,20 +63,21 @@ def _compute_ground_op_cost_from_region_probs(
     # if nsrt_name in ["MoveToPreTurnOn", "PushOpenHingeDoor", "PushOpen"]:
     #     # return default_cost
     #     return 0
+    # if nsrt_name.startswith("ObserveContainer"):
+    #     found_obj_names = sorted({
+    #         a.objects[0].name for a in ground_nsrt.add_effects
+    #         if getattr(a.predicate, "name", None) == "ObjectFound" and a.objects
+    #     })
+    #     num_effects = len(found_obj_names)
+    #     return 0.1 + 0.1 * num_effects
     if nsrt_name.startswith("ObserveContainer"):
-        found_obj_names = sorted({
-            a.objects[0].name for a in ground_nsrt.add_effects
-            if getattr(a.predicate, "name", None) == "ObjectFound" and a.objects
-        })
-        num_effects = len(found_obj_names)
-        return 0.1 + 0.1 * num_effects
-    if nsrt_name.startswith("MoveToPrePickUp"):
+        cost = BASE_COST_OBSERVE
         # if len(ground_nsrt.objects) < 2:
         #     return BASE_COST_OBSERVE
-        container_name = getattr(ground_nsrt.objects[2], "name", str(ground_nsrt.objects[2]))
+        container_name = getattr(ground_nsrt.objects[1], "name", str(ground_nsrt.objects[1]))
         region_name = container_to_region.get(container_name, "right_hinge_cabinet")
         found_obj_names = sorted({
-            a.objects[0].name for a in ground_nsrt.preconditions
+            a.objects[0].name for a in ground_nsrt.add_effects
             if getattr(a.predicate, "name", None) == "ObjectFound" and a.objects
         })
         elem_probs = []
@@ -89,9 +88,9 @@ def _compute_ground_op_cost_from_region_probs(
             else:
                 elem_probs.append(
                     region_probs_default.get(region_name, DEFAULT_SUCCESS_PROBABILITY))
-        lambda_ = 1.0
         for p in elem_probs:
-            return default_cost + lambda_ * (-log10(max(p, EPSILON)))
+            cost = cost * (1 / max(p, EPSILON))
+        return cost
     return default_cost
 
 
@@ -130,11 +129,6 @@ class RefinementEstimationApproach(OracleApproach):
                 logging.info(f"Could not find estimator model file "
                              f"at {model_file_path}")
         
-        # Initialize skeleton log file path
-        self._skeleton_log_counter = 0
-        self._skeleton_log_dir = Path(CFG.log_dir) / "skeleton_logs"
-        os.makedirs(self._skeleton_log_dir, exist_ok=True)
-
     @classmethod
     def get_name(cls) -> str:
         return "refinement_estimation"
@@ -298,14 +292,18 @@ class RefinementEstimationApproach(OracleApproach):
     def _log_skeletons(self, task: Task, proposed_skeletons: List[Tuple],
                        sorted_skeletons: List[Tuple],
                        estimator: BaseRefinementEstimator) -> None:
-        """Write skeleton information to a separate log file."""
-        self._skeleton_log_counter += 1
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = self._skeleton_log_dir / f"skeletons_{timestamp}_{self._skeleton_log_counter}.json"
+        """Write skeleton information to a log file under current plan dir."""
+        del estimator  # only used for interface consistency
+        task_id = int(getattr(CFG, "batch_task_id", 0))
+        exp_id = int(getattr(CFG, "batch_experiment_id", 0))
+        plan_dir = self._infer_latest_plan_dir()
+        plan_id = self._infer_plan_id_from_dir(plan_dir)
+        prefix = f"task_{task_id}_experiment_{exp_id:03d}_plan_{plan_id:03d}"
+        log_file = plan_dir / f"{prefix}.json"
         
         # Prepare skeleton data for logging
         skeleton_log_data = {
-            "timestamp": timestamp,
+            "timestamp": prefix,
             "task_goal": [str(atom) for atom in task.goal],
             "num_skeletons_generated": len(proposed_skeletons),
             "skeletons": []
@@ -341,11 +339,11 @@ class RefinementEstimationApproach(OracleApproach):
         # Write to JSON file
         with open(log_file, "w", encoding="utf-8") as f:
             json.dump(skeleton_log_data, f, indent=2, ensure_ascii=False)
-        
+
         # Also write a human-readable text log
-        text_log_file = self._skeleton_log_dir / f"skeletons_{timestamp}_{self._skeleton_log_counter}.txt"
+        text_log_file = plan_dir / f"log_{prefix}.log"
         with open(text_log_file, "w", encoding="utf-8") as f:
-            f.write(f"Skeleton Log - {timestamp}\n")
+            f.write(f"Skeleton Log - {prefix}\n")
             f.write("=" * 80 + "\n")
             f.write(f"Task Goal: {[str(atom) for atom in task.goal]}\n")
             f.write(f"Number of Skeletons Generated: {len(proposed_skeletons)}\n")
@@ -362,6 +360,26 @@ class RefinementEstimationApproach(OracleApproach):
                     objects_str = ", ".join([f"{obj.name}({obj.type})" for obj in nsrt.objects])
                     f.write(f"  Step {step_idx}: {nsrt.name} with objects [{objects_str}]\n")
                 f.write("\n")
+
+    def _infer_latest_plan_dir(self) -> Path:
+        """Get latest plan directory from current experiment directory."""
+        exp_dir = Path(CFG.log_dir)
+        candidates = [
+            p for p in exp_dir.iterdir()
+            if p.is_dir() and p.name.startswith("task") and "_plan_" in p.name
+        ]
+        if not candidates:
+            return exp_dir
+        candidates.sort(key=lambda p: p.stat().st_mtime)
+        return candidates[-1]
+
+    @staticmethod
+    def _infer_plan_id_from_dir(plan_dir: Path) -> int:
+        """Extract plan id from a directory named like task1_plan_003."""
+        if "_plan_" not in plan_dir.name:
+            return 0
+        suffix = plan_dir.name.split("_plan_", maxsplit=1)[1]
+        return int(suffix) if suffix.isdigit() else 0
 
     @property
     def refinement_estimator(self) -> BaseRefinementEstimator:

@@ -123,8 +123,9 @@ class KitchenEnv(BaseEnv):
     _original_gravity: Optional[np.ndarray] = None
 
     at_pre_turn_atol = 0.1  # tolerance for AtPreTurnOn/Off
-    ontop_atol = 0.18  # tolerance for OnTop
-    ontop_z_atol = 0.1  # tolerance for OnTop z position
+    ontop_atol = 0.35  # tolerance for OnTop
+    ontop_z_atol = 0.3  # tolerance for OnTop z position
+    # ontop_z_atol = 0.1  # tolerance for OnTop z position
     on_angle_thresh = -0.28  # -0.4  # dial is On if less than this threshold
     light_on_thresh = -0.39  # light is On if less than this threshold
     # microhandle_open_thresh = -0.65
@@ -173,19 +174,19 @@ class KitchenEnv(BaseEnv):
         ("mug", "hinge2"): (0.0, -0.1, 0.2),
         ("mug", "slide"): (0.0, -0.1, 0.2),
         ("mug", "microhandle"): (0.0, -0.1, 0.1),
-        ("mug", "sink"): (0.0, 0.0, 0.12),
+        ("mug", "sink"): (0.0, 0.0, 0.22),
         ("sponge", "hinge2"): (0.0, -0.1, 0.1),
         ("sponge", "slide"): (0.0, -0.1, 0.1),
         ("sponge", "microhandle"): (0.0, -0.1, 0.1),
-        ("sponge", "sink"): (0.0, 0.0, 0.12),
+        ("sponge", "sink"): (0.0, 0.0, 0.22),
         ("tea", "hinge2"): (0.0, -0.1, 0.1),
         ("tea", "slide"): (0.0, -0.1, 0.1),
         ("tea", "microhandle"): (0.0, -0.1, 0.1),
-        ("tea", "sink"): (0.0, 0.0, 0.12),
+        ("tea", "sink"): (-0.1, 0.1, 0.22),
         ("milk", "hinge2"): (0.0, -0.1, 0.1),
         ("milk", "slide"): (0.0, -0.1, 0.1),
         ("milk", "microhandle"): (0.0, -0.1, 0.1),
-        ("milk", "sink"): (0.0, 0.0, 0.12),
+        ("milk", "sink"): (-0.15, -0.15, 0.22),
     }
 
     obj_name_to_xyz = {
@@ -195,8 +196,8 @@ class KitchenEnv(BaseEnv):
         "slide": np.array([0.15, 0.507, 2.6]),
         # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
         "microhandle": np.array([-0.3187852, 0.74210206, 1.792]),
-        "countertop": np.array([0.0, 0.5, 1.626]),
-        "sink": np.array([0.2, 0.3, 1.68]),
+        # "countertop": np.array([0.0, 0.5, 1.626]),
+        "sink": np.array([0.3, 0.3, 1.6]),
     }
 
     def __init__(self, use_gui: bool = True) -> None:
@@ -407,6 +408,7 @@ README of that repo suggests!"
         MugWashed = self._pred_name_to_pred["MugWashed"]
         TeaMade = self._pred_name_to_pred["TeaMade"]
         TeaInSink = self._pred_name_to_pred["TeaInSink"]
+        MilkTeaMade = self._pred_name_to_pred["MilkTeaMade"]
         goal_preds = set()
         if CFG.kitchen_goals in ["all", "kettle_only"]:
             goal_preds.add(OnTop)
@@ -428,6 +430,8 @@ README of that repo suggests!"
             goal_preds.add(MugWashed)
         if CFG.kitchen_goals in ["all", "make_tea"]:
             goal_preds.add(TeaMade)
+        if CFG.kitchen_goals in ["all", "make_milk_tea"]:
+            goal_preds.add(MilkTeaMade)
         return goal_preds
 
     @classmethod
@@ -482,7 +486,9 @@ README of that repo suggests!"
             Predicate("SpongeInSink", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
             Predicate("MugWashed", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
             Predicate("TeaInSink", [cls.tea_type, cls.object_type], cls._OnTop_holds),
+            Predicate("MilkInSink", [cls.milk_type, cls.object_type], cls._OnTop_holds),
             Predicate("TeaMade", [cls.tea_type, cls.object_type], cls._OnTop_holds),
+            Predicate("MilkTeaMade", [cls.milk_type, cls.tea_type, cls.object_type], cls._OnTop_holds),
         }
 
         return {p.name: p for p in preds}
@@ -506,8 +512,27 @@ README of that repo suggests!"
         """Made public for perceiver."""
         return Object(obj_name, cls.obj_name_to_type[obj_name])
 
+    @classmethod
+    def _clear_shared_kitchen_belief_state(cls) -> None:
+        """Reset class-level belief dicts so a new episode or env does not inherit a prior run.
+
+        These dicts are class attributes; ``__init__`` only fills missing keys, so
+        values from a previous experiment would otherwise leak into planning.
+        """
+        cls._container_observed_status.clear()
+        for container_name in _CONTAINER_SITE_TO_NAME.values():
+            cls._container_observed_status[container_name] = False
+        cls._grippable_object_found_status.clear()
+        cls._grippable_object_grasped_status.clear()
+        for object_name in ("mug", "milk", "sponge", "tea"):
+            cls._grippable_object_found_status[object_name] = False
+            cls._grippable_object_grasped_status[object_name] = False
+        cls._grasped_object_relative_pose.clear()
+
     def reset(self, train_or_test: str, task_idx: int) -> Observation:
         """Resets the current state to the train or test task initial state."""
+        self._clear_shared_kitchen_belief_state()
+        self._grasped_object_body_ids.clear()
         KitchenEnv._current_env = self
         # Restore gravity if it was modified
         if self._original_gravity is not None:
@@ -529,15 +554,24 @@ README of that repo suggests!"
             "Try using --bilevel_plan_without_sim True")
 
     def step(self, action: Action) -> Observation:
-        # Before step: Set grasped objects to their target positions and zero velocities
-        # This prevents physics simulation from affecting them during step()
-        self._pre_step_update_grasped_objects()
+        use_magic_options = bool(getattr(CFG, "kitchen_use_magic_options",
+                                         False))
+        if not use_magic_options:
+            # Before step: set grasped objects to their target positions and
+            # zero velocities so physics does not move attached objects.
+            self._pre_step_update_grasped_objects()
+        elif self._original_gravity is not None:
+            # If grasp syncing is disabled for magic options, make sure gravity
+            # is restored in case a previous run modified it.
+            self._gym_env.model.opt.gravity[:] = self._original_gravity
+            self._original_gravity = None
         
         self._gym_env.step(action.arr)
         
-        # After step: Update positions of grasped objects again (kinematic attachment)
-        # This ensures they stay attached even if step() moved them
-        self._update_grasped_objects()
+        if not use_magic_options:
+            # After step: update attached objects again so they stay fixed
+            # relative to the gripper.
+            self._update_grasped_objects()
         
         if self._using_gui:
             self._gym_env.render()
@@ -566,7 +600,7 @@ README of that repo suggests!"
         
         # Disable gravity if any object is grasped, restore if none are grasped
         if has_grasped_objects:
-            model.opt.gravity = [0.0, 0.0, -0.001]   # Disable gravity globally
+            model.opt.gravity = [0.0, 0.0, -0.01]   # Disable gravity globally
             # print(f"Gravity: {model.opt.gravity}")
         else:
             # Restore original gravity when no objects are grasped
@@ -832,6 +866,11 @@ README of that repo suggests!"
         """Set the found status of tea."""
         cls._grippable_object_found_status[tea_name] = found
 
+    @classmethod
+    def set_milk_found(cls, milk_name: str = "milk", found: bool = True) -> None:
+        """Set the found status of milk."""
+        cls._grippable_object_found_status[milk_name] = found
+
     # @classmethod
     # def get_banana_found(cls, banana_name: str = "banana") -> bool:
     #     """Get the found status of banana."""
@@ -913,6 +952,7 @@ README of that repo suggests!"
         mug = self.object_name_to_object("mug")
         sponge = self.object_name_to_object("sponge")
         tea = self.object_name_to_object("tea")
+        milk = self.object_name_to_object("milk")
         sink = self.object_name_to_object("sink")
         goal_desc = self._current_task.goal_description
         kettle_on_burner4 = self._OnTop_holds(state, [kettle, burner4])
@@ -931,6 +971,7 @@ README of that repo suggests!"
         tea_in_sink = self._OnTop_holds(state, [tea, sink])
         mug_washed = self._OnTop_holds(state, [sponge, sink])
         tea_made = self._OnTop_holds(state, [tea, sink])
+        milk_tea_made = self._OnTop_holds(state, [milk, tea, sink])
 
         if goal_desc == ("Move the kettle to the back burner and turn it on; "
                          "also turn on the light"):
@@ -961,6 +1002,8 @@ README of that repo suggests!"
             return mug_washed
         if goal_desc == ("Make a cup of tea"):
             return tea_made
+        if goal_desc == ("Make a cup of milk tea"):
+            return milk_tea_made
         raise NotImplementedError(f"Unrecognized goal: {goal_desc}")
 
     def _get_tasks(self, num: int,
@@ -968,7 +1011,7 @@ README of that repo suggests!"
         tasks = []
 
         assert CFG.kitchen_goals in [
-            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "put_mug_in_sink", "clean_mug", "make_tea"
+            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "put_mug_in_sink", "clean_mug", "make_tea", "make_milk_tea"
         ]
         goal_descriptions: List[str] = []
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -1002,6 +1045,8 @@ README of that repo suggests!"
             goal_descriptions.append("Clean the mug")
         if CFG.kitchen_goals in ["all", "make_tea"]:
             goal_descriptions.append("Make a cup of tea")
+        if CFG.kitchen_goals in ["all", "make_milk_tea"]:
+            goal_descriptions.append("Make a cup of milk tea")
         if CFG.kitchen_goals == "all":
             desc = (
                 "Move the kettle to the back left burner and turn it on; also "
@@ -1019,6 +1064,10 @@ README of that repo suggests!"
 
     def _reset_initial_state_from_seed(self, seed: int,
                                        train_or_test: str) -> Observation:
+        # Same clearing as ``reset()`` so callers of this alone (e.g. ``get_test_tasks``)
+        # do not read stale class-level belief state.
+        self._clear_shared_kitchen_belief_state()
+        self._grasped_object_body_ids.clear()
         self._gym_env.reset(seed=seed)
         print("RESET START")
         kettle_x_coord = -0.269
@@ -1033,7 +1082,8 @@ README of that repo suggests!"
             kettle_y_coord = rng.uniform(0.4, 0.55)
         self._gym_env.set_body_position(  # type: ignore
             # "kettle", (kettle_x_coord, kettle_y_coord, 1.626))
-            "kettle", (kettle_x_coord, kettle_y_coord, 0.0))
+            # "kettle", (kettle_x_coord, kettle_y_coord, 0.0))
+            "kettle", (-0.8, -0.2, 1.626))
 
         self._setup_new_objects(seed, train_or_test)
         self.get_object_centric_state_info()
@@ -1244,16 +1294,36 @@ README of that repo suggests!"
 
     @classmethod
     def _OnTop_holds(cls, state: State, objects: Sequence[Object]) -> bool:
-        obj1, obj2 = objects
-        obj1_xy = [state.get(obj1, "x"), state.get(obj1, "y")]
-        obj2_xy = [
-            state.get(obj2, "x"),
-            state.get(obj2, "y"),
-        ]
-        return np.allclose(obj1_xy,
+        # If any involved object is currently grasped by the gripper, it should
+        # not count as stably on top of another object/surface.
+        for obj in objects:
+            obj_name = obj.name if hasattr(obj, "name") else ""
+            if cls._grippable_object_grasped_status.get(obj_name, False):
+                return False
+        if len(objects) == 2:
+            obj1, obj2 = objects
+            obj1_xy = [state.get(obj1, "x"), state.get(obj1, "y")]
+            obj2_xy = [
+                state.get(obj2, "x"),
+                state.get(obj2, "y"),
+            ]
+            return np.allclose(obj1_xy,
                            obj2_xy, atol=cls.ontop_atol) and state.get(
                                obj1, "z") > state.get(obj2, "z") and np.isclose(
                                 state.get(obj1, "z"), state.get(obj2, "z"), atol=cls.ontop_z_atol)
+        elif len(objects) == 3:
+            obj1, obj2, obj3 = objects
+            obj1_xy = [state.get(obj1, "x"), state.get(obj1, "y")]
+            obj2_xy = [state.get(obj2, "x"), state.get(obj2, "y")]
+            obj3_xy = [state.get(obj3, "x"), state.get(obj3, "y")]
+            return np.allclose(obj1_xy, obj2_xy, atol=cls.ontop_atol) and np.allclose(
+                obj1_xy, obj3_xy, atol=cls.ontop_atol) and state.get(
+                    obj1, "z") > state.get(obj3, "z") and state.get(
+                        obj2, "z") > state.get(obj3, "z") and np.isclose(
+                            state.get(obj1, "z"), state.get(obj3, "z"), atol=cls.ontop_z_atol) and np.isclose(
+                                state.get(obj2, "z"), state.get(obj3, "z"), atol=cls.ontop_z_atol)
+        else:
+            raise ValueError(f"OnTop_holds expects 2 or 3 objects, got {len(objects)}")
 
     @classmethod
     def _NotOnTop_holds(cls, state: State, objects: Sequence[Object]) -> bool:
@@ -1485,6 +1555,11 @@ README of that repo suggests!"
         return cls._ContainsObject_holds(state, objects, "tea")
 
     @classmethod
+    def _ContainsMilk_holds(cls, state: State, objects: Sequence[Object]) -> bool:
+        """Check if container contains milk. Delegates to _ContainsObject_holds."""
+        return cls._ContainsObject_holds(state, objects, "milk")
+
+    @classmethod
     def _NotContainsSponge_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if container does not contain sponge."""
         gripper, container = objects
@@ -1517,6 +1592,8 @@ README of that repo suggests!"
             return cls._ContainsSponge_holds(state, [gripper, container])
         if obj_name == "tea":
             return cls._ContainsTea_holds(state, [gripper, container])
+        if obj_name == "milk":
+            return cls._ContainsMilk_holds(state, [gripper, container])
         # Unsupported object types (e.g., banana, if re-enabled later).
         return False
 

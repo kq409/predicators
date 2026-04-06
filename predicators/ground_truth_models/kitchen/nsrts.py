@@ -33,6 +33,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         hinge_door_type = types["hinge_door"]
         # banana_type = types["banana"]
         mug_type = types["mug"]
+        milk_type = types["milk"]
         sponge_type = types["sponge"]
         object_type = types["object"]
         tea_type = types["tea"]
@@ -49,6 +50,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         container = Variable("?container", hinge_door_type)  # Use hinge_door_type instead
         # banana = Variable("?banana", banana_type)
         mug = Variable("?mug", mug_type)
+        milk = Variable("?milk", milk_type)
         tea = Variable("?tea", tea_type)
         sponge = Variable("?sponge", sponge_type)
         obj = Variable("?obj", grippable_object_type)
@@ -78,7 +80,9 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         Place = options["Place"]
         WashMug = options["WashMug"]
         MakeTea = options["MakeTea"]
-        
+        PlaceTeaOnTable = options["PlaceTeaOnTable"]
+        PlaceMilkOnTable = options["PlaceMilkOnTable"]
+        MakeMilkTea = options["MakeMilkTea"]
         ObserveContainer = options["ObserveContainer"]
 
 
@@ -119,9 +123,11 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         # BananaOnTop = predicates["BananaOnTop"]
         MugInSink = predicates["MugInSink"]
         TeaInSink = predicates["TeaInSink"]
+        MilkInSink = predicates["MilkInSink"]
         SpongeInSink = predicates["SpongeInSink"]
         MugWashed = predicates["MugWashed"]
         TeaMade = predicates["TeaMade"]
+        MilkTeaMade = predicates["MilkTeaMade"]
 
         nsrts = set()
 
@@ -683,7 +689,9 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         # objects can be found, while execution-time logic sets actual found
         # flags based on reality. Additional ObserveContainer* NSRTs represent
         # smaller optimistic found subsets.
-        parameters = [gripper, container, mug, sponge, tea]
+        # NOTE: include milk in parameters so that LiftedAtoms involving
+        # `milk` in preconditions/add_effects can be grounded.
+        parameters = [gripper, container, mug, sponge, tea, milk]
         preconditions = {
             LiftedAtom(AtPreObserve, [gripper, container]),
             LiftedAtom(Open, [container]),
@@ -691,6 +699,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             LiftedAtom(NotObserved, [container]),
             LiftedAtom(ObjectNotFound, [sponge, container]),
             LiftedAtom(ObjectNotFound, [mug, container]),
+            LiftedAtom(ObjectNotFound, [milk, container]),
             LiftedAtom(ObjectNotFound, [tea, container]),
         }
         # Assume always find all objects during planning (optimistic planning);
@@ -698,6 +707,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         add_effects = {
             LiftedAtom(ObjectFound, [sponge, container]),
             LiftedAtom(ObjectFound, [mug, container]),
+            LiftedAtom(ObjectFound, [milk, container]),
             LiftedAtom(ObjectFound, [tea, container]),
             LiftedAtom(Observed, [container])
         }
@@ -705,6 +715,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             LiftedAtom(NotObserved, [container]),
             LiftedAtom(ObjectNotFound, [sponge, container]),
             LiftedAtom(ObjectNotFound, [mug, container]),
+            LiftedAtom(ObjectNotFound, [milk, container]),
             LiftedAtom(ObjectNotFound, [tea, container]),
             }
         ignore_effects = {
@@ -851,6 +862,102 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                 LiftedAtom(NotObserved, [container]),
                 LiftedAtom(ObjectNotFound, [mug, container]),
                 LiftedAtom(ObjectNotFound, [tea, container]),
+            },
+            ignore_effects, option, option_vars,
+            observe_container_sampler)
+
+        # ObserveContainer variants including milk.
+        # As with the other variants, we only split the symbolic found/not-found
+        # assumptions (optimistic planning). The underlying ObserveContainer
+        # option is reused; `milk` only appears in the NSRT's symbolic effects
+        # and preconditions.
+        parameters_with_milk = [gripper, container, mug, sponge, tea, milk]
+
+        observe_container_milk_nsrt = NSRT(
+            "ObserveContainerMilk", parameters_with_milk,
+            {
+                LiftedAtom(AtPreObserve, [gripper, container]),
+                LiftedAtom(Open, [container]),
+                LiftedAtom(CanObserve, [container]),
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
+            },
+            {
+                LiftedAtom(ObjectFound, [milk, container]),
+                LiftedAtom(Observed, [container]),
+            },
+            {
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
+            },
+            ignore_effects, option, option_vars,
+            observe_container_sampler)
+
+        observe_container_sponge_milk_nsrt = NSRT(
+            "ObserveContainerSpongeMilk", parameters_with_milk,
+            {
+                LiftedAtom(AtPreObserve, [gripper, container]),
+                LiftedAtom(Open, [container]),
+                LiftedAtom(CanObserve, [container]),
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [sponge, container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
+            },
+            {
+                LiftedAtom(ObjectFound, [sponge, container]),
+                LiftedAtom(ObjectFound, [milk, container]),
+                LiftedAtom(Observed, [container]),
+            },
+            {
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [sponge, container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
+            },
+            ignore_effects, option, option_vars,
+            observe_container_sampler)
+
+        observe_container_mug_milk_nsrt = NSRT(
+            "ObserveContainerMugMilk", parameters_with_milk,
+            {
+                LiftedAtom(AtPreObserve, [gripper, container]),
+                LiftedAtom(Open, [container]),
+                LiftedAtom(CanObserve, [container]),
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [mug, container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
+            },
+            {
+                LiftedAtom(ObjectFound, [mug, container]),
+                LiftedAtom(ObjectFound, [milk, container]),
+                LiftedAtom(Observed, [container]),
+            },
+            {
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [mug, container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
+            },
+            ignore_effects, option, option_vars,
+            observe_container_sampler)
+
+        observe_container_tea_milk_nsrt = NSRT(
+            "ObserveContainerTeaMilk", parameters_with_milk,
+            {
+                LiftedAtom(AtPreObserve, [gripper, container]),
+                LiftedAtom(Open, [container]),
+                LiftedAtom(CanObserve, [container]),
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [tea, container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
+            },
+            {
+                LiftedAtom(ObjectFound, [tea, container]),
+                LiftedAtom(ObjectFound, [milk, container]),
+                LiftedAtom(Observed, [container]),
+            },
+            {
+                LiftedAtom(NotObserved, [container]),
+                LiftedAtom(ObjectNotFound, [tea, container]),
+                LiftedAtom(ObjectNotFound, [milk, container]),
             },
             ignore_effects, option, option_vars,
             observe_container_sampler)
@@ -1237,7 +1344,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         add_effects = {
             LiftedAtom(TeaInSink, [tea, destination]),
             LiftedAtom(TeaMade, [tea, destination]),
-            LiftedAtom(GripperFree, [gripper]),
+            # LiftedAtom(GripperFree, [gripper]),
         }
         delete_effects = {
             LiftedAtom(ObjectPickedUp, [gripper, tea]),
@@ -1251,6 +1358,72 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
                              add_effects, delete_effects, ignore_effects,
                              option, option_vars, place_sampler)
 
+        # PlaceTeaOnTable
+        parameters = [gripper, tea, mug, destination]
+        preconditions = {
+            LiftedAtom(AtPrePickUp, [gripper, tea, destination]),
+            LiftedAtom(ObjectPickedUp, [gripper, tea]),
+            LiftedAtom(MugInSink, [mug, destination]),
+        }
+        add_effects = {
+            LiftedAtom(TeaInSink, [tea, destination]),
+            LiftedAtom(GripperFree, [gripper]),
+        }
+        delete_effects = {
+            LiftedAtom(ObjectPickedUp, [gripper, tea]),
+            LiftedAtom(AtPrePickUp, [gripper, tea, destination])
+        }
+        ignore_effects = {AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp}
+        option = PlaceTeaOnTable
+        option_vars = [gripper, tea, mug, destination]
+
+        place_tea_on_table_nsrt = NSRT("PlaceTeaOnTable", parameters, preconditions,
+                                      add_effects, delete_effects, ignore_effects,
+                                      option, option_vars, place_sampler)
+
+        # PlaceMilkOnTable
+        parameters = [gripper, milk, mug, destination]
+        preconditions = {
+            LiftedAtom(AtPrePickUp, [gripper, milk, destination]),
+            LiftedAtom(ObjectPickedUp, [gripper, milk]),
+            LiftedAtom(MugInSink, [mug, destination]),
+        }
+        add_effects = {
+            LiftedAtom(MilkInSink, [milk, destination]),
+            LiftedAtom(GripperFree, [gripper]),
+        }
+        delete_effects = {
+            LiftedAtom(ObjectPickedUp, [gripper, milk]),
+            LiftedAtom(AtPrePickUp, [gripper, milk, destination])
+        }
+        ignore_effects = {AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp}
+        option = PlaceMilkOnTable
+        option_vars = [gripper, milk, mug, destination]
+
+        place_milk_on_table_nsrt = NSRT("PlaceMilkOnTable", parameters, preconditions,
+                                      add_effects, delete_effects, ignore_effects,
+                                      option, option_vars, place_sampler)
+
+        # MakeMilkTea
+        parameters = [gripper, milk, tea, mug, destination]
+        preconditions = {
+            LiftedAtom(MilkInSink, [milk, destination]),
+            LiftedAtom(TeaInSink, [tea, destination]),
+            LiftedAtom(MugInSink, [mug, destination]),
+            LiftedAtom(GripperFree, [gripper]),
+        }
+        add_effects = {
+            LiftedAtom(MilkTeaMade, [milk, tea, destination]),
+        }
+        delete_effects = {
+        }
+        ignore_effects = {AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp}
+        option = MakeMilkTea
+        option_vars = [gripper, milk, tea, mug, destination]
+
+        make_milk_tea_nsrt = NSRT("MakeMilkTea", parameters, preconditions,
+                                  add_effects, delete_effects, ignore_effects,
+                                  option, option_vars, place_sampler)
         # OpenContainer
         # parameters = [gripper, container]
         # preconditions = {
@@ -1338,6 +1511,10 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         nsrts.add(observe_container_sponge_mug_nsrt)
         nsrts.add(observe_container_sponge_tea_nsrt)
         nsrts.add(observe_container_mug_tea_nsrt)
+        nsrts.add(observe_container_milk_nsrt)
+        nsrts.add(observe_container_sponge_milk_nsrt)
+        nsrts.add(observe_container_mug_milk_nsrt)
+        nsrts.add(observe_container_tea_milk_nsrt)
 
         # Banana-specific NSRTs remain separate; other grippable objects use generic object NSRTs.
 
@@ -1346,6 +1523,9 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         nsrts.add(move_to_target_object_nsrt)
         # nsrts.add(place_nsrt)
         nsrts.add(place_mug_in_sink_nsrt)
+        nsrts.add(place_tea_on_table_nsrt)
+        nsrts.add(place_milk_on_table_nsrt)
+        nsrts.add(make_milk_tea_nsrt)
         nsrts.add(wash_mug_nsrt)
         nsrts.add(make_tea_nsrt)
         return nsrts
