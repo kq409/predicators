@@ -585,21 +585,24 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         def push_open_hinge_door_sampler(state: State, goal: Set[GroundAtom],
                                          rng: np.random.Generator,
                                          objs: Sequence[Object]) -> Array:
-            del state, goal  # unused
+            del goal  # unused
             # Sample a direction to push w.r.t. the x axis.
+            gripper = objs[0]
+            gx, gy, gz = state.get(gripper, "x"), state.get(gripper, "y"), state.get(gripper, "z")
             if CFG.kitchen_use_perfect_samplers:
                 # Push slightly inward.
                 if objs[1].name == "slide":
                     push_angle = 1 * np.pi / 8
                 elif objs[1].name == "microhandle":
-                    # push_angle = -6 * np.pi / 8
-                    push_angle = -5 * np.pi / 8
+                    push_angle = -6 * np.pi / 8
+                    # push_angle = -5 * np.pi / 8
                     # push_angle = 17 * np.pi / 16
                 # elif objs[1].name == "hinge2":
                 #     push_angle = -9 * np.pi / 32
                 elif objs[1].name == "hinge2":
                     # push_angle = -4 * np.pi / 16
-                    push_angle = -7 * np.pi / 8
+                    # push_angle = -7 * np.pi / 8
+                    push_angle = -13 * np.pi / 16
                 else:
                     push_angle = -np.pi / 2
             else:
