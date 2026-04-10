@@ -29,7 +29,8 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
     moveto_tol: ClassVar[float] = 0.01  # for terminating moving
     max_delta_mag: ClassVar[float] = 1.0  # don't move more than this per step
     min_delta_mag: ClassVar[float] = 0.4  # don't move less than this per step
-    max_push_mag: ClassVar[float] = 0.05  # for pushing forward
+    # max_push_mag: ClassVar[float] = 0.05  # for pushing forward
+    max_push_mag: ClassVar[float] = 0.1  # for pushing forward
     # A reasonable home position for the end effector.
     home_pos: ClassVar[Pose3D] = (-0.2, 0.37, 2.1)
     # Keep pushing a bit even if the On classifier holds.

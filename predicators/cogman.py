@@ -220,9 +220,22 @@ def run_episode_and_get_observations(
     observations = [obs]
     actions: List[Action] = []
     curr_option: Optional[_Option] = None
+    curr_option_start_time: Optional[float] = None
+    curr_option_start_step: int = 0
     metrics: Metrics = defaultdict(float)
     metrics["policy_call_time"] = 0.0
     metrics["num_options_executed"] = 0.0
+
+    def _finalize_curr_option(end_time: float, end_step: int) -> None:
+        nonlocal curr_option, curr_option_start_time, curr_option_start_step
+        if curr_option is None or curr_option_start_time is None:
+            return
+        option_name = curr_option.name
+        duration_sec = max(0.0, end_time - curr_option_start_time)
+        duration_steps = max(0, end_step - curr_option_start_step)
+        metrics[f"option_{option_name}_total_time_sec"] += duration_sec
+        metrics[f"option_{option_name}_total_steps"] += float(duration_steps)
+        metrics[f"option_{option_name}_count"] += 1.0
     exception_raised_in_step = False
     if not (terminate_on_goal_reached and env.goal_reached()):
         for _ in range(max_num_steps):
@@ -233,9 +246,23 @@ def run_episode_and_get_observations(
                 act = cogman.step(obs)
                 metrics["policy_call_time"] += time.perf_counter() - start_time
                 if act is None:
+                    _finalize_curr_option(time.perf_counter(), len(actions))
                     break
                 if act.has_option() and act.get_option() != curr_option:
+                    if curr_option is not None and curr_option_start_time is not None:
+                        prev_duration_sec = max(
+                            0.0,
+                            time.perf_counter() - curr_option_start_time)
+                        prev_duration_steps = max(
+                            0, len(actions) - curr_option_start_step)
+                        print(
+                            f"Finished option: {curr_option.name} | "
+                            f"duration={prev_duration_sec:.4f}s | "
+                            f"steps={prev_duration_steps}")
+                    _finalize_curr_option(time.perf_counter(), len(actions))
                     curr_option = act.get_option()
+                    curr_option_start_time = time.perf_counter()
+                    curr_option_start_step = len(actions)
                     metrics["num_options_executed"] += 1
                     cogman._episode_option_switch_history.append(curr_option)
                     # Add real-time output
@@ -267,6 +294,7 @@ def run_episode_and_get_observations(
                 raise e
             if terminate_on_goal_reached and env.goal_reached():
                 break
+    _finalize_curr_option(time.perf_counter(), len(actions))
     if monitor is not None and not exception_raised_in_step:
         monitor.observe(obs, None)
     cogman.finish_episode(obs)

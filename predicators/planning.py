@@ -397,28 +397,6 @@ def _skeleton_generator(
             raise _MaxSkeletonsFailure(
                 "Planning reached max_skeletons_optimized!")
         _, _, node = hq.heappop(queue)
-        # #region agent log
-        try:
-            import json as _json  # local import to avoid global pollution
-            _log_entry = {
-                "sessionId": "c72403",
-                "id": f"log_{int(time.perf_counter()*1000)}",
-                "timestamp": int(time.time() * 1000),
-                "location": "planning.py:_skeleton_generator:pop",
-                "message": "Popped node from skeleton queue",
-                "data": {
-                    "skeleton_len": len(node.skeleton),
-                    "skeleton_names": [nsrt.name for nsrt in node.skeleton],
-                    "queue_size": len(queue),
-                },
-                "runId": "pre-fix",
-                "hypothesisId": "skeleton_search_progress",
-            }
-            with open("debug-c72403.log", "a", encoding="utf-8") as _f:
-                _f.write(_json.dumps(_log_entry) + "\n")
-        except Exception:
-            pass
-        # #endregion agent log
         if use_visited_state_set:
             frozen_atoms = frozenset(node.atoms)
             visited_atom_sets.add(frozen_atoms)
@@ -430,27 +408,6 @@ def _skeleton_generator(
         if task.goal.issubset(node.atoms):
             # If this skeleton satisfies the goal, yield it.
             metrics["num_skeletons_optimized"] += 1
-            # #region agent log
-            try:
-                import json as _json  # local import to avoid global pollution
-                _log_entry = {
-                    "sessionId": "c72403",
-                    "id": f"log_{int(time.perf_counter()*1000)}",
-                    "timestamp": int(time.time() * 1000),
-                    "location": "planning.py:_skeleton_generator:yield",
-                    "message": "Yielding goal-reaching skeleton",
-                    "data": {
-                        "skeleton_len": len(node.skeleton),
-                        "skeleton_names": [nsrt.name for nsrt in node.skeleton],
-                    },
-                    "runId": "pre-fix",
-                    "hypothesisId": "skeleton_found",
-                }
-                with open("debug-c72403.log", "a", encoding="utf-8") as _f:
-                    _f.write(_json.dumps(_log_entry) + "\n")
-            except Exception:
-                pass
-            # #endregion agent log
             yield node.skeleton, node.atoms_sequence
         else:
             # Generate successors.
@@ -533,28 +490,6 @@ def _skeleton_generator(
     if not queue:
         raise _MaxSkeletonsFailure("Planning ran out of skeletons!")
     assert time.perf_counter() - start_time >= timeout
-    # #region agent log
-    try:
-        import json as _json  # local import to avoid global pollution
-        _log_entry = {
-            "sessionId": "c72403",
-            "id": f"log_{int(time.perf_counter()*1000)}",
-            "timestamp": int(time.time() * 1000),
-            "location": "planning.py:_skeleton_generator:timeout",
-            "message": "Skeleton search timeout reached",
-            "data": {
-                "elapsed": time.perf_counter() - start_time,
-                "num_nodes_created": metrics.get("num_nodes_created", 0),
-                "num_nodes_expanded": metrics.get("num_nodes_expanded", 0),
-            },
-            "runId": "pre-fix",
-            "hypothesisId": "skeleton_timeout",
-        }
-        with open("debug-c72403.log", "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps(_log_entry) + "\n")
-    except Exception:
-        pass
-    # #endregion agent log
     raise _SkeletonSearchTimeout
 
 
