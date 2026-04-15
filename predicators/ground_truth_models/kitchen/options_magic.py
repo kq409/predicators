@@ -998,7 +998,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             elif origin.name == "slide":
-                if destination.name == "sink":
+                if destination.name == "countertop":
                     target_quat = angled_quat
                     memory["waypoints"] = [
                         ((gx, gy - 0.3, gz + 0.05), current_quat),
@@ -1153,106 +1153,6 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
             initiable=lambda _1, _2, _3, _4: True,
             terminal=lambda _1, _2, _3, _4: True)
         options.add(MakeMilkTea)
-        # OpenContainer
-        # def _OpenContainer_policy(state: State, memory: Dict,
-        #                         objects: Sequence[Object], params: Array) -> Action:
-        #     del state, memory  # unused
-        #     push_angle = params[0]
-        #     print("Pushing container with angle: ", push_angle)
-        #     if objects[1].name == "microhandle":
-        #         # Microwave door: consider the rotation angle of the microwave
-        #         # The microwave rotates around the z axis by 0.3 radians
-        #         microwave_rotation = 0.3  # The rotation angle of the microwave
-                
-        #         # Arc parameters (in the local coordinate system of the microwave)
-        #         arc_radius = 0.52  # Arc radius
-        #         arc_angle = push_angle  # Current arc angle
-                
-        #         # Calculate the arc position in the local coordinate system of the microwave
-        #         local_dx = arc_radius * np.cos(arc_angle)
-        #         local_dy = arc_radius * np.sin(arc_angle)
-                
-        #         # Convert the local coordinates to the world coordinates
-        #         # Consider the rotation angle of the microwave
-        #         cos_rot = np.cos(microwave_rotation)
-        #         sin_rot = np.sin(microwave_rotation)
-                
-        #         # Rotation matrix transformation
-        #         dx = local_dx * cos_rot - local_dy * sin_rot
-        #         dy = local_dx * sin_rot + local_dy * cos_rot
-        #         dz = 0.0  # Keep z unchanged
 
-        #         # Limit the magnitude of dx, dy, using max_push_mag
-        #         # Calculate the magnitude of the current displacement, using max_push_mag
-        #         displacement_mag = np.sqrt(dx**2 + dy**2)
-        #         if displacement_mag > cls.max_push_mag:
-        #             # If out of limit, scale proportionally
-        #             scale_factor = cls.max_push_mag / displacement_mag
-        #             dx *= scale_factor
-        #             dy *= scale_factor
-                
-        #         # Rotate around z axis (consider microwave rotation)
-        #         rot_z = push_angle * 0.5 + microwave_rotation  # Add the rotation angle of the microwave
-        #         if abs(rot_z) > cls.max_delta_mag:
-        #             # If out of limit, scale proportionally
-        #             rot_z = np.sign(rot_z) * cls.max_delta_mag
-                
-        #         arr = np.array([dx, dy, dz, 0.0, 0.0, rot_z, -1.0],
-        #                     dtype=np.float32)
-        #     elif objects[1].name == "hinge1":
-        #         hinge2_rotation = 0
-
-        #         arc_radius = 0.39
-        #         arc_angle = push_angle
-
-        #         local_dx = arc_radius * np.cos(arc_angle)
-        #         local_dy = arc_radius * np.sin(arc_angle)
-                
-        #         cos_rot = np.cos(hinge2_rotation)
-        #         sin_rot = np.sin(hinge2_rotation)
-                
-        #         dx = local_dx * cos_rot - local_dy * sin_rot
-        #         dy = local_dx * sin_rot + local_dy * cos_rot
-        #         dz = 0.0  # Keep z unchanged
-
-        #         displacement_mag = np.sqrt(dx**2 + dy**2)
-        #         if displacement_mag > cls.max_push_mag:
-        #             scale_factor = cls.max_push_mag / displacement_mag
-        #             dx *= scale_factor
-        #             dy *= scale_factor
-                
-        #         rot_z = push_angle * 0.5 + hinge2_rotation
-        #         if abs(rot_z) > cls.max_delta_mag:
-        #             rot_z = np.sign(rot_z) * cls.max_delta_mag
-                
-        #         arr = np.array([dx, dy, dz, 0.0, 0.0, rot_z, -1.0],
-        #                     dtype=np.float32)
-                
-        #     else:
-        #         # The parameter is a push direction angle with respect to x.
-        #         push_angle = params[0]
-        #         unit_x, unit_y = np.cos(push_angle), np.sin(push_angle)
-        #         dx = unit_x * cls.max_push_mag / 2.0
-        #         dy = unit_y * cls.max_push_mag / 2.0
-        #         arr = np.array([dx, dy, 0.0, 0.0, 0.0, 0.0, -1.0],
-        #                     dtype=np.float32)
-        #     return Action(arr)
-
-        # def _OpenContainer_terminal(state: State, memory: Dict,
-        #                           objects: Sequence[Object], params: Array) -> bool:
-        #     del memory, params  # unused
-        #     _, obj = objects
-        #     # Use a more stringent threshold to avoid numerical issues.
-        #     return KitchenEnv.Open_holds(
-        #         state, [obj], thresh_pad=cls.push_microhandle_thresh_pad)
-
-        # OpenContainer = ParameterizedOption(
-        #     "OpenContainer",
-        #     types=[gripper_type, hinge_door_type],
-        #     params_space=Box(-np.pi, np.pi, (1, )),
-        #     policy=_OpenContainer_policy,
-        #     initiable=lambda _1, _2, _3, _4: True,
-        #     terminal=_OpenContainer_terminal)
-        # options.add(OpenContainer)
 
         return options

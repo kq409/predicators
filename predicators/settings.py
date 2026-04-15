@@ -475,6 +475,8 @@ class GlobalSettings:
     # evaluation parameters
     log_dir = "logs"
     results_dir = "results"
+    # If non-empty, append one JSON line per completed option segment (see cogman).
+    cogman_option_log_file = ""
     eval_trajectories_dir = "eval_trajectories"
     approach_dir = "saved_approaches"
     data_dir = "saved_datasets"

@@ -31,11 +31,11 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         switch_type = types["switch"]
         knob_type = types["knob"]
         hinge_door_type = types["hinge_door"]
+        site_type = types["site"]
         # banana_type = types["banana"]
         mug_type = types["mug"]
         milk_type = types["milk"]
         sponge_type = types["sponge"]
-        object_type = types["object"]
         tea_type = types["tea"]
         grippable_object_type = types["grippable_object"]
         # Objects
@@ -54,8 +54,8 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         tea = Variable("?tea", tea_type)
         sponge = Variable("?sponge", sponge_type)
         obj = Variable("?obj", grippable_object_type)
-        origin = Variable("?origin", object_type)
-        destination = Variable("?destination", object_type)
+        origin = Variable("?origin", site_type)
+        destination = Variable("?destination", site_type)
 
 
         # Options
@@ -121,10 +121,10 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         ObjectPickedUp = predicates["ObjectPickedUp"]
         GripperFree = predicates["GripperFree"]
         # BananaOnTop = predicates["BananaOnTop"]
-        MugInSink = predicates["MugInSink"]
-        TeaInSink = predicates["TeaInSink"]
-        MilkInSink = predicates["MilkInSink"]
-        SpongeInSink = predicates["SpongeInSink"]
+        MugOnCountertop = predicates["MugOnCountertop"]
+        TeaOnCountertop = predicates["TeaOnCountertop"]
+        MilkOnCountertop = predicates["MilkOnCountertop"]
+        SpongeOnCountertop = predicates["SpongeOnCountertop"]
         MugWashed = predicates["MugWashed"]
         TeaMade = predicates["TeaMade"]
         MilkTeaMade = predicates["MilkTeaMade"]
@@ -1280,14 +1280,14 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
 
 
 
-        # PlaceMugInSink
+        # PlaceMugOnCountertop
         parameters = [gripper, mug, destination]
         preconditions = {
             LiftedAtom(AtPrePickUp, [gripper, mug, destination]),
             LiftedAtom(ObjectPickedUp, [gripper, mug]),
         }
         add_effects = {
-            LiftedAtom(MugInSink, [mug, destination]),
+            LiftedAtom(MugOnCountertop, [mug, destination]),
             LiftedAtom(GripperFree, [gripper]),
         }
         delete_effects = {
@@ -1307,19 +1307,20 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
             params = np.array([0.0, 0.0, 0.0], dtype=np.float32)
             return params
 
-        place_mug_in_sink_nsrt = NSRT("PlaceMugInSink", parameters, preconditions,
-                                      add_effects, delete_effects, ignore_effects,
-                                      option, option_vars, place_sampler)
+        place_mug_on_countertop_nsrt = NSRT("PlaceMugOnCountertop", parameters,
+                                            preconditions, add_effects,
+                                            delete_effects, ignore_effects,
+                                            option, option_vars, place_sampler)
 
         # WashMug
         parameters = [gripper, sponge, mug, destination]
         preconditions = {
             LiftedAtom(AtPrePickUp, [gripper, sponge, destination]),
             LiftedAtom(ObjectPickedUp, [gripper, sponge]),
-            LiftedAtom(MugInSink, [mug, destination]),
+            LiftedAtom(MugOnCountertop, [mug, destination]),
         }
         add_effects = {
-            LiftedAtom(SpongeInSink, [sponge, destination]),
+            LiftedAtom(SpongeOnCountertop, [sponge, destination]),
             LiftedAtom(MugWashed, [sponge, destination]),
             LiftedAtom(GripperFree, [gripper]),
         }
@@ -1342,10 +1343,10 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         preconditions = {
             LiftedAtom(AtPrePickUp, [gripper, tea, destination]),
             LiftedAtom(ObjectPickedUp, [gripper, tea]),
-            LiftedAtom(MugInSink, [mug, destination]),
+            LiftedAtom(MugOnCountertop, [mug, destination]),
         }
         add_effects = {
-            LiftedAtom(TeaInSink, [tea, destination]),
+            LiftedAtom(TeaOnCountertop, [tea, destination]),
             LiftedAtom(TeaMade, [tea, destination]),
             # LiftedAtom(GripperFree, [gripper]),
         }
@@ -1366,10 +1367,10 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         preconditions = {
             LiftedAtom(AtPrePickUp, [gripper, tea, destination]),
             LiftedAtom(ObjectPickedUp, [gripper, tea]),
-            LiftedAtom(MugInSink, [mug, destination]),
+            LiftedAtom(MugOnCountertop, [mug, destination]),
         }
         add_effects = {
-            LiftedAtom(TeaInSink, [tea, destination]),
+            LiftedAtom(TeaOnCountertop, [tea, destination]),
             LiftedAtom(GripperFree, [gripper]),
         }
         delete_effects = {
@@ -1389,10 +1390,10 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         preconditions = {
             LiftedAtom(AtPrePickUp, [gripper, milk, destination]),
             LiftedAtom(ObjectPickedUp, [gripper, milk]),
-            LiftedAtom(MugInSink, [mug, destination]),
+            LiftedAtom(MugOnCountertop, [mug, destination]),
         }
         add_effects = {
-            LiftedAtom(MilkInSink, [milk, destination]),
+            LiftedAtom(MilkOnCountertop, [milk, destination]),
             LiftedAtom(GripperFree, [gripper]),
         }
         delete_effects = {
@@ -1410,9 +1411,9 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         # MakeMilkTea
         parameters = [gripper, milk, tea, mug, destination]
         preconditions = {
-            LiftedAtom(MilkInSink, [milk, destination]),
-            LiftedAtom(TeaInSink, [tea, destination]),
-            LiftedAtom(MugInSink, [mug, destination]),
+            LiftedAtom(MilkOnCountertop, [milk, destination]),
+            LiftedAtom(TeaOnCountertop, [tea, destination]),
+            LiftedAtom(MugOnCountertop, [mug, destination]),
             LiftedAtom(GripperFree, [gripper]),
         }
         add_effects = {
@@ -1525,7 +1526,7 @@ class KitchenGroundTruthNSRTFactory(GroundTruthNSRTFactory):
         nsrts.add(pick_object_nsrt)
         nsrts.add(move_to_target_object_nsrt)
         # nsrts.add(place_nsrt)
-        nsrts.add(place_mug_in_sink_nsrt)
+        nsrts.add(place_mug_on_countertop_nsrt)
         nsrts.add(place_tea_on_table_nsrt)
         nsrts.add(place_milk_on_table_nsrt)
         nsrts.add(make_milk_tea_nsrt)

@@ -8,11 +8,15 @@ whether to re-query the approach at each time step based on the states.
 
 The name "CogMan" is due to Leslie Kaelbling.
 """
+import json
 import logging
 import time
 from collections import defaultdict
-from typing import Callable, List, Optional, Sequence, Set, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from typing import Type as TypingType
+
+import numpy as np
 
 from predicators import utils
 from predicators.approaches import BaseApproach
@@ -23,6 +27,68 @@ from predicators.settings import CFG
 from predicators.structs import Action, Dataset, EnvironmentTask, GroundAtom, \
     InteractionRequest, InteractionResult, LowLevelTrajectory, Metrics, \
     Observation, State, Task, Video, _Option
+
+
+def _option_params_to_json_list(params: np.ndarray) -> List[float]:
+    """Flatten option params to a JSON-serializable list of floats."""
+    if params is None or (hasattr(params, "size") and params.size == 0):
+        return []
+    arr = np.asarray(params, dtype=np.float64).flatten()
+    return [float(x) for x in arr.tolist()]
+
+
+def _option_to_execution_record(option: _Option, segment_index: int,
+                                episode_index: int) -> Dict[str, Any]:
+    """Serializable description of a grounded option (no timing yet)."""
+    objects_payload: List[Dict[str, str]] = []
+    object_names: List[str] = []
+    for obj in option.objects:
+        objects_payload.append({"name": obj.name, "type": obj.type.name})
+        object_names.append(obj.name)
+    return {
+        "event": "option_finished",
+        "episode_index": episode_index,
+        "segment_index": segment_index,
+        "option_name": option.name,
+        "objects": objects_payload,
+        "object_names": object_names,
+        "params": _option_params_to_json_list(option.params),
+    }
+
+
+def _append_cogman_option_log(record: Dict[str, Any],
+                              duration_wall_sec: float,
+                              num_env_steps: int) -> None:
+    """Append one JSON line if CFG.cogman_option_log_file is set."""
+    path_str = getattr(CFG, "cogman_option_log_file", "") or ""
+    if not path_str:
+        return
+    out = dict(record)
+    out["duration_wall_sec"] = float(duration_wall_sec)
+    out["num_env_steps"] = int(num_env_steps)
+    path = Path(path_str)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fp:
+        fp.write(json.dumps(out, ensure_ascii=False) + "\n")
+
+
+def _format_option_log_message(option: _Option, duration_wall_sec: float,
+                               num_env_steps: int) -> str:
+    rec = _option_to_execution_record(option, segment_index=-1,
+                                      episode_index=-1)
+    rec.pop("event", None)
+    rec.pop("segment_index", None)
+    rec.pop("episode_index", None)
+    parts = [
+        f"Finished option: {option.name}",
+        f"duration={duration_wall_sec:.4f}s",
+        f"steps={num_env_steps}",
+    ]
+    if rec["object_names"]:
+        parts.append(f"objects={rec['object_names']}")
+    if rec["params"]:
+        parts.append(f"params={rec['params']}")
+    return " | ".join(parts)
 
 
 class CogMan:
@@ -225,9 +291,11 @@ def run_episode_and_get_observations(
     metrics: Metrics = defaultdict(float)
     metrics["policy_call_time"] = 0.0
     metrics["num_options_executed"] = 0.0
+    option_segment_seq = 0
 
     def _finalize_curr_option(end_time: float, end_step: int) -> None:
-        nonlocal curr_option, curr_option_start_time, curr_option_start_step
+        nonlocal curr_option, curr_option_start_time, curr_option_start_step, \
+            option_segment_seq
         if curr_option is None or curr_option_start_time is None:
             return
         option_name = curr_option.name
@@ -236,6 +304,21 @@ def run_episode_and_get_observations(
         metrics[f"option_{option_name}_total_time_sec"] += duration_sec
         metrics[f"option_{option_name}_total_steps"] += float(duration_steps)
         metrics[f"option_{option_name}_count"] += 1.0
+        option_segment_seq += 1
+        record = _option_to_execution_record(curr_option, option_segment_seq,
+                                             cogman._episode_num)
+        record["train_or_test"] = train_or_test
+        record["env_task_idx"] = task_idx
+        batch_tid = getattr(CFG, "batch_task_id", None)
+        batch_eid = getattr(CFG, "batch_experiment_id", None)
+        if batch_tid is not None:
+            record["batch_task_id"] = batch_tid
+        if batch_eid is not None:
+            record["batch_experiment_id"] = batch_eid
+        _append_cogman_option_log(record, duration_sec, duration_steps)
+        logging.info(
+            _format_option_log_message(curr_option, duration_sec,
+                                       duration_steps))
     exception_raised_in_step = False
     if not (terminate_on_goal_reached and env.goal_reached()):
         for _ in range(max_num_steps):
@@ -249,27 +332,21 @@ def run_episode_and_get_observations(
                     _finalize_curr_option(time.perf_counter(), len(actions))
                     break
                 if act.has_option() and act.get_option() != curr_option:
-                    if curr_option is not None and curr_option_start_time is not None:
-                        prev_duration_sec = max(
-                            0.0,
-                            time.perf_counter() - curr_option_start_time)
-                        prev_duration_steps = max(
-                            0, len(actions) - curr_option_start_step)
-                        print(
-                            f"Finished option: {curr_option.name} | "
-                            f"duration={prev_duration_sec:.4f}s | "
-                            f"steps={prev_duration_steps}")
                     _finalize_curr_option(time.perf_counter(), len(actions))
                     curr_option = act.get_option()
                     curr_option_start_time = time.perf_counter()
                     curr_option_start_step = len(actions)
                     metrics["num_options_executed"] += 1
                     cogman._episode_option_switch_history.append(curr_option)
-                    # Add real-time output
-                    print(f"Executing option: {curr_option.name}")
-                    if hasattr(curr_option, 'objects') and curr_option.objects:
-                        obj_names = [obj.name for obj in curr_option.objects]
-                        print(f"Objects: {obj_names}")
+                    exec_parts = [f"Executing option: {curr_option.name}"]
+                    if curr_option.objects:
+                        exec_parts.append(
+                            "objects="
+                            + str([obj.name for obj in curr_option.objects]))
+                    opt_params = _option_params_to_json_list(curr_option.params)
+                    if opt_params:
+                        exec_parts.append(f"params={opt_params}")
+                    logging.info(" | ".join(exec_parts))
                 # Note: it's important to call monitor.observe() before
                 # env.step(), because the monitor may, for example, call
                 # env.render(), which outputs images of the current env

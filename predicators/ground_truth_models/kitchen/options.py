@@ -1286,6 +1286,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 target_quat = angled_quat
                 memory["waypoints"] = [
                     ((gx, gy - 0.2, gz + 0.1), current_quat),
+                    ((gx + 0.05, gy - 0.25, gz + 0.1), current_quat),
                     ((home_x, home_y, home_z), angled_quat),
                     # ((tx + dx, ty + dy, tz + dz), target_quat),
                     ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
@@ -1293,7 +1294,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             elif origin.name == "slide":
-                if destination.name == "sink":
+                if destination.name == "countertop":
                     target_quat = angled_quat
                     if ox >= 0.13:
                         memory["waypoints"] = [

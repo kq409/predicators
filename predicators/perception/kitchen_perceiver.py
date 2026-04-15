@@ -29,15 +29,15 @@ class KitchenPerceiver(BasePerceiver):
         # banana = KitchenEnv.object_name_to_object("banana")
         # BananaFound = pred_name_to_pred["BananaFound"]
         # BananaOnTop = pred_name_to_pred["BananaOnTop"]
-        MugInSink = pred_name_to_pred["MugInSink"]
-        SpongeInSink = pred_name_to_pred["SpongeInSink"]
+        MugOnCountertop = pred_name_to_pred["MugOnCountertop"]
+        SpongeOnCountertop = pred_name_to_pred["SpongeOnCountertop"]
         MugWashed = pred_name_to_pred["MugWashed"]
         TeaMade = pred_name_to_pred["TeaMade"]
         MilkTeaMade = pred_name_to_pred["MilkTeaMade"]
         mug = KitchenEnv.object_name_to_object("mug")
         sponge = KitchenEnv.object_name_to_object("sponge")
         tea = KitchenEnv.object_name_to_object("tea")
-        sink = KitchenEnv.object_name_to_object("sink")
+        countertop = KitchenEnv.object_name_to_object("countertop")
         milk = KitchenEnv.object_name_to_object("milk")
         goal_desc = env_task.goal_description
         if goal_desc == (
@@ -76,19 +76,19 @@ class KitchenPerceiver(BasePerceiver):
         #     goal = {
         #         GroundAtom(BananaOnTop, [banana, burner2])
         #     }
-        elif goal_desc == "Put the mug in the sink":
-            goal = {GroundAtom(MugInSink, [mug, sink])}
+        elif goal_desc == "Put the mug on the countertop":
+            goal = {GroundAtom(MugOnCountertop, [mug, countertop])}
         elif goal_desc == "CleanMug" or goal_desc == "Clean the mug":
             goal = {
-                GroundAtom(MugWashed, [sponge, sink])
+                GroundAtom(MugWashed, [sponge, countertop])
             }
         elif goal_desc == "Make a cup of tea":
             goal = {
-                GroundAtom(TeaMade, [tea, sink])
+                GroundAtom(TeaMade, [tea, countertop])
             }
         elif goal_desc == "Make a cup of milk tea":
             goal = {
-                GroundAtom(MilkTeaMade, [milk, tea, sink])
+                GroundAtom(MilkTeaMade, [milk, tea, countertop])
             }
         else:
             raise NotImplementedError(f"Unrecognized goal: {goal_desc}")

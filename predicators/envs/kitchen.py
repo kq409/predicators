@@ -67,7 +67,8 @@ class KitchenEnv(BaseEnv):
     object_type = Type("object", ["x", "y", "z"])
     gripper_type = Type("gripper", ["x", "y", "z", "qw", "qx", "qy", "qz", "finger1_pos", "finger2_pos"],
                         parent=object_type)
-    on_off_type = Type("on_off", ["x", "y", "z", "angle"], parent=object_type)
+    site_type = Type("site", ["x", "y", "z"], parent=object_type)
+    on_off_type = Type("on_off", ["x", "y", "z", "angle"], parent=site_type)
     hinge_door_type = Type("hinge_door", ["x", "y", "z", "angle", "observed"],
                            parent=on_off_type)
     knob_type = Type("knob", ["x", "y", "z", "angle"], parent=on_off_type)
@@ -103,8 +104,7 @@ class KitchenEnv(BaseEnv):
         "milk": milk_type,
         "sponge": sponge_type,
         "tea": tea_type,
-        "countertop": object_type,
-        "sink": object_type,
+        "countertop": site_type,
     }
 
     # Class level dictionary to store container observed status
@@ -123,7 +123,8 @@ class KitchenEnv(BaseEnv):
     _original_gravity: Optional[np.ndarray] = None
 
     at_pre_turn_atol = 0.1  # tolerance for AtPreTurnOn/Off
-    ontop_atol = 0.35  # tolerance for OnTop
+    ontop_atol_original = 0.35
+    ontop_atol = 0.5 # tolerance for OnTop
     ontop_z_atol = 0.3  # tolerance for OnTop z position
     # ontop_z_atol = 0.1  # tolerance for OnTop z position
     on_angle_thresh = -0.28  # -0.4  # dial is On if less than this threshold
@@ -142,7 +143,7 @@ class KitchenEnv(BaseEnv):
     at_pre_pick_up_tol = 0.1  # tolerance for AtPrePickUp
     pick_up_tol = 0.05  # tolerance for picking up banana
     gripper_closed_threshold = 0.05  # threshold for gripper closed
-    in_sink_tol = 0.3  # threshold for mug in sink
+    on_countertop_tol = 0.3  # threshold for mug on countertop
 
     obj_name_to_pre_push_dpos = {
         ("kettle", "on"): (-0.05, -0.2, 0.00),
@@ -174,19 +175,19 @@ class KitchenEnv(BaseEnv):
         ("mug", "hinge2"): (0.0, -0.1, 0.2),
         ("mug", "slide"): (0.0, -0.1, 0.2),
         ("mug", "microhandle"): (0.0, -0.1, 0.1),
-        ("mug", "sink"): (0.0, 0.0, 0.22),
+        ("mug", "countertop"): (0.0, 0.0, 0.22),
         ("sponge", "hinge2"): (0.0, -0.1, 0.1),
         ("sponge", "slide"): (0.0, -0.1, 0.1),
         ("sponge", "microhandle"): (0.0, -0.1, 0.1),
-        ("sponge", "sink"): (-0.1, 0.1, 0.22),
+        ("sponge", "countertop"): (-0.1, 0.1, 0.22),
         ("tea", "hinge2"): (0.0, -0.13, 0.15),
         ("tea", "slide"): (0.0, -0.13, 0.15),
         ("tea", "microhandle"): (0.0, -0.1, 0.1),
-        ("tea", "sink"): (-0.13, 0.13, 0.22),
-        ("milk", "hinge2"): (0.0, -0.1, 0.15),
-        ("milk", "slide"): (0.0, -0.1, 0.1),
+        ("tea", "countertop"): (-0.13, 0.13, 0.22),
+        ("milk", "hinge2"): (0.0, -0.13, 0.15),
+        ("milk", "slide"): (0.0, -0.13, 0.1),
         ("milk", "microhandle"): (0.0, -0.1, 0.1),
-        ("milk", "sink"): (-0.15, -0.15, 0.22),
+        ("milk", "countertop"): (-0.15, -0.15, 0.22),
     }
 
     obj_name_to_xyz = {
@@ -196,8 +197,7 @@ class KitchenEnv(BaseEnv):
         "slide": np.array([0.15, 0.507, 2.6]),
         # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
         "microhandle": np.array([-0.3187852, 0.74210206, 1.792]),
-        # "countertop": np.array([0.0, 0.5, 1.626]),
-        "sink": np.array([0.3, 0.3, 1.6]),
+        "countertop": np.array([0.3, 0.35, 1.6]),
     }
 
     def __init__(self, use_gui: bool = True) -> None:
@@ -403,11 +403,11 @@ README of that repo suggests!"
         KnobAndBurnerLinked = self._pred_name_to_pred["KnobAndBurnerLinked"]
         # BananaFound = self._pred_name_to_pred["BananaFound"]
         # BananaOnTop = self._pred_name_to_pred["BananaOnTop"]
-        MugInSink = self._pred_name_to_pred["MugInSink"]
-        SpongeInSink = self._pred_name_to_pred["SpongeInSink"]
+        MugOnCountertop = self._pred_name_to_pred["MugOnCountertop"]
+        SpongeOnCountertop = self._pred_name_to_pred["SpongeOnCountertop"]
         MugWashed = self._pred_name_to_pred["MugWashed"]
         TeaMade = self._pred_name_to_pred["TeaMade"]
-        TeaInSink = self._pred_name_to_pred["TeaInSink"]
+        TeaOnCountertop = self._pred_name_to_pred["TeaOnCountertop"]
         MilkTeaMade = self._pred_name_to_pred["MilkTeaMade"]
         goal_preds = set()
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -424,8 +424,8 @@ README of that repo suggests!"
         #     goal_preds.add(BananaFound)
         # if CFG.kitchen_goals in ["all", "take_out_banana"]:
         #     goal_preds.add(BananaOnTop)
-        if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
-            goal_preds.add(MugInSink)
+        if CFG.kitchen_goals in ["all", "put_mug_on_countertop"]:
+            goal_preds.add(MugOnCountertop)
         if CFG.kitchen_goals in ["all", "clean_mug"]:
             goal_preds.add(MugWashed)
         if CFG.kitchen_goals in ["all", "make_tea"]:
@@ -466,7 +466,7 @@ README of that repo suggests!"
             # New predicates for banana search
             Predicate("AtPreObserve", [cls.gripper_type, cls.hinge_door_type],
                       cls._AtPreObserve_holds),
-            Predicate("AtPrePickUp", [cls.gripper_type, cls.grippable_object_type, cls.object_type],
+            Predicate("AtPrePickUp", [cls.gripper_type, cls.grippable_object_type, cls.site_type],
                       cls._AtPrePickUp_holds),
             Predicate("Observed", [cls.hinge_door_type], cls._Observed_holds),
             Predicate("NotObserved", [cls.hinge_door_type], cls._NotObserved_holds),
@@ -482,13 +482,13 @@ README of that repo suggests!"
             # Predicate("BananaPickedUp", [cls.gripper_type, cls.banana_type], cls._BananaPickedUp_holds),
             Predicate("ObjectPickedUp", [cls.gripper_type, cls.grippable_object_type], cls._ObjectPickedUp_holds),
             Predicate("GripperFree", [cls.gripper_type], cls._GripperFree_holds),
-            Predicate("MugInSink", [cls.mug_type, cls.object_type], cls._OnTop_holds),
-            Predicate("SpongeInSink", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
-            Predicate("MugWashed", [cls.sponge_type, cls.object_type], cls._OnTop_holds),
-            Predicate("TeaInSink", [cls.tea_type, cls.object_type], cls._OnTop_holds),
-            Predicate("MilkInSink", [cls.milk_type, cls.object_type], cls._OnTop_holds),
-            Predicate("TeaMade", [cls.tea_type, cls.object_type], cls._OnTop_holds),
-            Predicate("MilkTeaMade", [cls.milk_type, cls.tea_type, cls.object_type], cls._OnTop_holds),
+            Predicate("MugOnCountertop", [cls.mug_type, cls.site_type], cls._OnTop_holds),
+            Predicate("SpongeOnCountertop", [cls.sponge_type, cls.site_type], cls._OnTop_holds),
+            Predicate("MugWashed", [cls.sponge_type, cls.site_type], cls._OnTop_holds),
+            Predicate("TeaOnCountertop", [cls.tea_type, cls.site_type], cls._OnTop_holds),
+            Predicate("MilkOnCountertop", [cls.milk_type, cls.site_type], cls._OnTop_holds),
+            Predicate("TeaMade", [cls.tea_type, cls.site_type], cls._OnTop_holds),
+            Predicate("MilkTeaMade", [cls.milk_type, cls.tea_type, cls.site_type], cls._OnTop_holds),
         }
 
         return {p.name: p for p in preds}
@@ -496,7 +496,7 @@ README of that repo suggests!"
     @property
     def types(self) -> Set[Type]:
         return {
-            self.gripper_type, self.object_type, self.on_off_type,
+            self.gripper_type, self.object_type, self.site_type, self.on_off_type,
             self.knob_type, self.kettle_type, self.switch_type,
             self.hinge_door_type, self.surface_type,
             self.mug_type, self.milk_type, self.sponge_type, self.tea_type,
@@ -820,15 +820,15 @@ README of that repo suggests!"
         #         "x": 0.0, "y": 0.0, "z": 0.0, "found": found
         #     }
         
-        # Ensure sink is in state_dict (sink may not be tracked in state_info)
-        sink = cls.object_name_to_object("sink")
-        if sink not in state_dict:
-            # Get sink position from obj_name_to_xyz if available
-            sink_pos = cls.obj_name_to_xyz.get("sink", np.array([1.3, 0.5, 1.3]))
-            state_dict[sink] = {
-                "x": float(sink_pos[0]),
-                "y": float(sink_pos[1]),
-                "z": float(sink_pos[2])
+        # Ensure countertop is in state_dict (it may not be tracked in state_info)
+        countertop = cls.object_name_to_object("countertop")
+        if countertop not in state_dict:
+            countertop_pos = cls.obj_name_to_xyz.get("countertop",
+                                                     np.array([1.3, 0.5, 1.3]))
+            state_dict[countertop] = {
+                "x": float(countertop_pos[0]),
+                "y": float(countertop_pos[1]),
+                "z": float(countertop_pos[2])
             }
         
         state = utils.create_state_from_dict(state_dict)
@@ -953,7 +953,7 @@ README of that repo suggests!"
         sponge = self.object_name_to_object("sponge")
         tea = self.object_name_to_object("tea")
         milk = self.object_name_to_object("milk")
-        sink = self.object_name_to_object("sink")
+        countertop = self.object_name_to_object("countertop")
         goal_desc = self._current_task.goal_description
         kettle_on_burner4 = self._OnTop_holds(state, [kettle, burner4])
         kettle_on_burner3 = self._OnTop_holds(state, [kettle, burner3])
@@ -966,12 +966,12 @@ README of that repo suggests!"
                                                     [kettle, burner3, knob3])
         # banana_found = self._BananaFound_holds(state, [banana])
         # take_out_banana = self._BananaOnTop_holds(state, [banana, burner2])
-        mug_in_sink = self._OnTop_holds(state, [mug, sink])
-        sponge_in_sink = self._OnTop_holds(state, [sponge, sink])
-        tea_in_sink = self._OnTop_holds(state, [tea, sink])
-        mug_washed = self._OnTop_holds(state, [sponge, sink])
-        tea_made = self._OnTop_holds(state, [tea, sink])
-        milk_tea_made = self._OnTop_holds(state, [milk, tea, sink])
+        mug_on_countertop = self._OnTop_holds(state, [mug, countertop])
+        sponge_on_countertop = self._OnTop_holds(state, [sponge, countertop])
+        tea_on_countertop = self._OnTop_holds(state, [tea, countertop])
+        mug_washed = self._OnTop_holds(state, [sponge, countertop])
+        tea_made = self._OnTop_holds(state, [tea, countertop])
+        milk_tea_made = self._OnTop_holds(state, [milk, tea, countertop])
 
         if goal_desc == ("Move the kettle to the back burner and turn it on; "
                          "also turn on the light"):
@@ -996,8 +996,8 @@ README of that repo suggests!"
         #     return banana_found
         # if goal_desc == ("Take out the banana"):
         #     return take_out_banana
-        if goal_desc == ("Put the mug in the sink"):
-            return mug_in_sink
+        if goal_desc == ("Put the mug on the countertop"):
+            return mug_on_countertop
         if goal_desc == ("Clean the mug"):
             return mug_washed
         if goal_desc == ("Make a cup of tea"):
@@ -1011,7 +1011,7 @@ README of that repo suggests!"
         tasks = []
 
         assert CFG.kitchen_goals in [
-            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "put_mug_in_sink", "clean_mug", "make_tea", "make_milk_tea"
+            "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "put_mug_on_countertop", "clean_mug", "make_tea", "make_milk_tea"
         ]
         goal_descriptions: List[str] = []
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -1039,8 +1039,8 @@ README of that repo suggests!"
         #     goal_descriptions.append("Find the banana")
         # if CFG.kitchen_goals in ["all", "take_out_banana"]:
         #     goal_descriptions.append("Take out the banana")
-        if CFG.kitchen_goals in ["all", "put_mug_in_sink"]:
-            goal_descriptions.append("Put the mug in the sink")
+        if CFG.kitchen_goals in ["all", "put_mug_on_countertop"]:
+            goal_descriptions.append("Put the mug on the countertop")
         if CFG.kitchen_goals in ["all", "clean_mug"]:
             goal_descriptions.append("Clean the mug")
         if CFG.kitchen_goals in ["all", "make_tea"]:
@@ -1083,7 +1083,7 @@ README of that repo suggests!"
         self._gym_env.set_body_position(  # type: ignore
             # "kettle", (kettle_x_coord, kettle_y_coord, 1.626))
             # "kettle", (kettle_x_coord, kettle_y_coord, 0.0))
-            "kettle", (-0.8, -0.2, 1.626))
+            "kettle", (-1.0, -0.4, 1.626))
 
         self._setup_new_objects(seed, train_or_test)
         self.get_object_centric_state_info()
@@ -1308,7 +1308,7 @@ README of that repo suggests!"
                 state.get(obj2, "y"),
             ]
             return np.allclose(obj1_xy,
-                           obj2_xy, atol=cls.ontop_atol) and state.get(
+                           obj2_xy, atol=cls.ontop_atol_original) and state.get(
                                obj1, "z") > state.get(obj2, "z") and np.isclose(
                                 state.get(obj1, "z"), state.get(obj2, "z"), atol=cls.ontop_z_atol)
         elif len(objects) == 3:
