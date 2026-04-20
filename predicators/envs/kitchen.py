@@ -187,7 +187,7 @@ class KitchenEnv(BaseEnv):
         ("milk", "hinge2"): (0.0, -0.13, 0.15),
         ("milk", "slide"): (0.0, -0.13, 0.1),
         ("milk", "microhandle"): (0.0, -0.1, 0.1),
-        ("milk", "countertop"): (-0.15, -0.15, 0.22),
+        ("milk", "countertop"): (-0.1, -0.1, 0.22),
     }
 
     obj_name_to_xyz = {

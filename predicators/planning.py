@@ -6,9 +6,11 @@ Mainly, "SeSamE": SEarch-and-SAMple planning, then Execution.
 from __future__ import annotations
 
 import heapq as hq
+import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1105,6 +1107,346 @@ def fd_plan_from_sas_file(
     return (skeleton, atoms_sequence, metrics)
 
 
+def sort_kstar_plan_candidates(
+    plan_candidates: List[Tuple[List[_GroundNSRT], List[Set[GroundAtom]], Metrics]]
+) -> List[Tuple[List[_GroundNSRT], List[Set[GroundAtom]], Metrics]]:
+    """Assign costs from option summary and sort kstar skeletons.
+
+    Costs are looked up by (option_name, object_names_key) from
+    experiment_results/option_execution_summary_solved_only.json.
+    If a ground option is not found, default cost 1.0 is used.
+    """
+    if not plan_candidates:
+        return plan_candidates
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    exp_dir = os.path.join(repo_root, "experiment_results")
+    summary_path = os.path.join(exp_dir, "option_execution_summary.json")
+    output_path = os.path.join(exp_dir, "kstar_sorted_skeletons.json")
+
+    summary_cost_by_key: Dict[Tuple[str, str], float] = {}
+    if os.path.exists(summary_path):
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary_payload = json.load(f)
+            if isinstance(summary_payload, list):
+                for row in summary_payload:
+                    if not isinstance(row, dict):
+                        continue
+                    option_name = str(row.get("option_name", "")).strip()
+                    if not option_name:
+                        continue
+                    obj_key = str(row.get("object_names_key", "")).strip()
+                    if not obj_key:
+                        objs = row.get("object_names", [])
+                        if isinstance(objs, list):
+                            obj_key = "|".join(str(x).strip().lower() for x in objs)
+                    mean_steps = row.get("num_env_steps_mean", 1.0)
+                    try:
+                        cost = float(mean_steps)
+                    except (TypeError, ValueError):
+                        cost = 1.0
+                    summary_cost_by_key[(option_name.lower(), obj_key.lower())] = cost
+        except (OSError, json.JSONDecodeError):
+            summary_cost_by_key = {}
+
+    region_probs_by_obj = getattr(CFG, "fd_region_probs_by_obj", {})
+    region_probs_default = getattr(CFG, "fd_region_probs_default", {})
+    default_success_probability = 1.0 / 3.0
+    epsilon = 1e-2
+    container_to_region = {
+        "microhandle": "microwave",
+        "hinge2": "right_hinge_cabinet",
+        "slide": "slide_cabinet",
+    }
+
+    def _compute_observe_weight(ground_nsrt: _GroundNSRT) -> float:
+        if not ground_nsrt.option.name.startswith("ObserveContainer"):
+            return 1.0
+        if len(ground_nsrt.objects) < 2:
+            return 1.0
+        container_name = getattr(ground_nsrt.objects[1], "name",
+                                 str(ground_nsrt.objects[1]))
+        region_name = container_to_region.get(container_name,
+                                              "right_hinge_cabinet")
+        found_obj_names = sorted({
+            a.objects[0].name for a in ground_nsrt.add_effects
+            if getattr(a.predicate, "name", None) == "ObjectFound" and a.objects
+        })
+        if not found_obj_names:
+            return 1.0
+        weight = 1.0
+        for obj_name in found_obj_names:
+            if obj_name in region_probs_by_obj:
+                p = float(region_probs_by_obj[obj_name].get(
+                    region_name, default_success_probability))
+            else:
+                p = float(region_probs_default.get(
+                    region_name, default_success_probability))
+            weight *= 1.0 / max(p, epsilon)
+        return weight
+
+    ranked: List[Tuple[float, int, List[_GroundNSRT], List[Set[GroundAtom]], Metrics,
+                       List[Dict[str, Any]], List[Dict[str, Any]]]] = []
+    for original_idx, (skeleton, atoms_seq, metrics) in enumerate(plan_candidates):
+        per_step_rows: List[Dict[str, Any]] = []
+        base_total_cost = 0.0
+        unmatched_count = 0
+        for step_idx, ground_nsrt in enumerate(skeleton):
+            option_name = ground_nsrt.option.name
+            raw_obj_names = [str(getattr(o, "name", o)).lower()
+                             for o in ground_nsrt.option_objs]
+            # Temporary hardcoded alias for summary naming mismatch:
+            # summary uses "sink" while kstar candidates may emit "countertop".
+            obj_names = ["sink" if n == "countertop" else n for n in raw_obj_names]
+            obj_key = "|".join(obj_names)
+            lookup_key = (option_name.lower(), obj_key)
+            matched = lookup_key in summary_cost_by_key
+            step_cost = summary_cost_by_key.get(lookup_key, 1.0)
+            observe_weight = _compute_observe_weight(ground_nsrt)
+            if not matched:
+                unmatched_count += 1
+            base_total_cost += float(step_cost)
+            per_step_rows.append({
+                "step_index": step_idx,
+                "nsrt_name": ground_nsrt.name,
+                "option_name": option_name,
+                "raw_object_names": raw_obj_names,
+                "object_names": obj_names,
+                "object_names_key": obj_key,
+                "matched_summary": matched,
+                "assigned_cost": float(step_cost),
+                "observe_weight": float(observe_weight),
+                "is_observe_option": option_name.startswith("ObserveContainer"),
+            })
+        weighted_total_cost = 0.0
+        segment_rows: List[Dict[str, Any]] = []
+        segment_start = 0
+        running_segment_cost = 0.0
+        for step in per_step_rows:
+            running_segment_cost += float(step["assigned_cost"])
+            if bool(step["is_observe_option"]):
+                observe_weight = float(step["observe_weight"])
+                weighted_segment_cost = running_segment_cost * observe_weight
+                weighted_total_cost += weighted_segment_cost
+                segment_rows.append({
+                    "segment_start_step_index": segment_start,
+                    "segment_end_step_index": int(step["step_index"]),
+                    "segment_cost_sum": float(running_segment_cost),
+                    "observe_step_index": int(step["step_index"]),
+                    "observe_option_name": step["option_name"],
+                    "observe_weight": observe_weight,
+                    "weighted_segment_cost": weighted_segment_cost,
+                })
+                segment_start = int(step["step_index"]) + 1
+                running_segment_cost = 0.0
+        if running_segment_cost > 0.0:
+            weighted_total_cost += running_segment_cost
+            segment_rows.append({
+                "segment_start_step_index": segment_start,
+                "segment_end_step_index": len(per_step_rows) - 1,
+                "segment_cost_sum": float(running_segment_cost),
+                "observe_step_index": None,
+                "observe_option_name": None,
+                "observe_weight": 1.0,
+                "weighted_segment_cost": float(running_segment_cost),
+            })
+        new_metrics: Metrics = defaultdict(float)
+        for key, value in metrics.items():
+            new_metrics[key] = value
+        new_metrics["kstar_base_total_cost"] = float(base_total_cost)
+        new_metrics["kstar_estimated_total_cost"] = float(weighted_total_cost)
+        new_metrics["kstar_unmatched_ground_options"] = float(unmatched_count)
+        ranked.append((float(weighted_total_cost), original_idx, skeleton, atoms_seq,
+                       new_metrics, per_step_rows, segment_rows))
+
+    ranked.sort(key=lambda x: (x[0], x[1]))
+
+    sorted_candidates: List[Tuple[List[_GroundNSRT], List[Set[GroundAtom]], Metrics]] = []
+    report_rows: List[Dict[str, Any]] = []
+    for sorted_rank, (total_cost, original_idx, skeleton, atoms_seq, metrics,
+                      per_step_rows, segment_rows) in enumerate(ranked):
+        sorted_candidates.append((skeleton, atoms_seq, metrics))
+        report_rows.append({
+            "sorted_rank": sorted_rank,
+            "original_index": original_idx,
+            "skeleton_total_cost": total_cost,
+            "base_total_cost": float(metrics["kstar_base_total_cost"]),
+            "num_steps": len(skeleton),
+            "unmatched_ground_options": int(metrics["kstar_unmatched_ground_options"]),
+            "segments": segment_rows,
+            "steps": per_step_rows,
+        })
+
+    os.makedirs(exp_dir, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "summary_path": summary_path,
+            "num_candidates": len(plan_candidates),
+            "default_cost_for_missing": 1.0,
+            "sorted_skeletons": report_rows,
+        }, f, indent=2)
+
+    return sorted_candidates
+
+
+def kstar_plan_from_sas_file(
+    sas_file: str, timeout_cmd: str, timeout: float, exec_str: str,
+    alias_flag: str, start_time: float, objects: List[Object],
+    init_atoms: Set[GroundAtom], nsrts: Set[NSRT], max_horizon: float
+) -> List[Tuple[List[_GroundNSRT], List[Set[GroundAtom]], Metrics]]:
+    """Given a SAS file, runs kstar search and returns up to k plan candidates.
+
+    Note: kstar output format can vary across builds; parsing here is best-effort.
+    """
+    # Put input file before kstar component options so the driver treats
+    # later flags as planner args, not top-level driver args.
+    # Run in a temp directory and read default sas_plan* outputs there.
+    plan_dir = tempfile.mkdtemp(prefix="kstar_plans_")
+    json_plan_name = "kstar_plans.json"
+    kstar_search_flag = alias_flag
+    if "json_file_to_dump=" not in kstar_search_flag:
+        search_match = re.search(r'--search\s+"(kstar\(.+\))"', kstar_search_flag)
+        if search_match:
+            original_search_expr = search_match.group(1)
+            if original_search_expr.endswith(")"):
+                patched_search_expr = original_search_expr[:-1] + \
+                    f", dump_plan_files=false, json_file_to_dump={json_plan_name})"
+                kstar_search_flag = kstar_search_flag.replace(
+                    f'"{original_search_expr}"',
+                    f'"{patched_search_expr}"',
+                    1)
+    cmd_str = (f"{timeout_cmd} {timeout} {exec_str} {sas_file} {kstar_search_flag}")
+    output = ""
+    try:
+        # Keep the high-level flow aligned with fd_plan_from_sas_file:
+        # run command, timeout check, then parse output.
+        proc = subprocess.run(cmd_str,
+                              shell=True,
+                              capture_output=True,
+                              text=True,
+                              cwd=plan_dir,
+                              check=False)
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if time.perf_counter() - start_time > timeout:
+            raise PlanningTimeout("Planning timed out in call to kstar!")
+        if "Solution found!" not in output and "Solution found." not in output:
+            raise PlanningFailure(f"Plan not found with kstar! Error: {output}")
+
+        num_nodes_expanded = re.findall(r"Expanded (\d+) state", output)
+        num_nodes_created = re.findall(r"Evaluated (\d+) state", output)
+        expanded = float(num_nodes_expanded[-1]) if num_nodes_expanded else 0.0
+        created = float(num_nodes_created[-1]) if num_nodes_created else 0.0
+        k_match = re.search(r"k\s*=\s*(\d+)", alias_flag)
+        k_limit = int(k_match.group(1)) if k_match else 100
+
+        # Try to parse each solution block separately first.
+        skeleton_strs_list: List[List[str]] = []
+        solution_blocks = re.split(r"Solution found[!.]", output)
+        for block in solution_blocks[1:]:
+            if "Plan length: 0 step" in block:
+                skeleton_strs_list.append([])
+                continue
+            block_actions = re.findall(r"(.+) \(\d+?\)", block)
+            if block_actions:
+                skeleton_strs_list.append(block_actions)
+        # Fallback to legacy one-solution parsing behavior.
+        if not skeleton_strs_list:
+            skeleton_str = re.findall(r"(.+) \(\d+?\)", output)
+            if skeleton_str:
+                skeleton_strs_list.append(skeleton_str)
+        # Preferred path for kstar: parse json_file_to_dump output.
+        if not skeleton_strs_list:
+            json_plan_path = os.path.join(plan_dir, json_plan_name)
+            json_plans_count = 0
+            if os.path.exists(json_plan_path):
+                try:
+                    with open(json_plan_path, "r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                    raw_plans = payload.get("plans", []) \
+                        if isinstance(payload, dict) else []
+                    json_plans_count = len(raw_plans)
+                    for raw_plan in raw_plans:
+                        if isinstance(raw_plan, dict):
+                            actions = raw_plan.get("actions",
+                                                   raw_plan.get("plan",
+                                                                raw_plan.get("operators", [])))
+                        elif isinstance(raw_plan, list):
+                            actions = raw_plan
+                        else:
+                            continue
+                        if not isinstance(actions, list):
+                            continue
+                        normalized_actions = []
+                        for act in actions:
+                            if not isinstance(act, str):
+                                continue
+                            act = act.strip()
+                            if act.startswith("(") and act.endswith(")"):
+                                act = act[1:-1].strip()
+                            if act:
+                                normalized_actions.append(act)
+                        if normalized_actions:
+                            skeleton_strs_list.append(normalized_actions)
+                except (OSError, json.JSONDecodeError):
+                    pass
+        # Preferred fallback for kstar: parse generated plan files.
+        if not skeleton_strs_list:
+            plan_files = sorted(
+                f for f in os.listdir(plan_dir) if f.startswith("sas_plan"))
+            for plan_name in plan_files:
+                plan_path = os.path.join(plan_dir, plan_name)
+                action_lines: List[str] = []
+                try:
+                    with open(plan_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith(";"):
+                                continue
+                            if line.startswith("(") and line.endswith(")"):
+                                action_lines.append(line[1:-1].strip())
+                except OSError:
+                    continue
+                if action_lines:
+                    skeleton_strs_list.append(action_lines)
+
+        if not skeleton_strs_list:
+            raise PlanningFailure(
+                f"Plan parsing failed with kstar! Error: {output}")
+        cleanup_cmd_str = f"{exec_str} --cleanup"
+        subprocess.getoutput(cleanup_cmd_str)
+    finally:
+        shutil.rmtree(plan_dir, ignore_errors=True)
+
+    nsrt_name_to_nsrt = {nsrt.name.lower(): nsrt for nsrt in nsrts}
+    obj_name_to_obj = {obj.name.lower(): obj for obj in objects}
+    plan_candidates: List[Tuple[List[_GroundNSRT], List[Set[GroundAtom]],
+                                Metrics]] = []
+    for skeleton_str in islice(skeleton_strs_list, k_limit):
+        skeleton: List[_GroundNSRT] = []
+        atoms_sequence = [init_atoms]
+        for nsrt_str in skeleton_str:
+            str_split = nsrt_str.split()
+            nsrt = nsrt_name_to_nsrt[str_split[0]]
+            objs = [obj_name_to_obj[obj_name] for obj_name in str_split[1:]]
+            ground_nsrt = nsrt.ground(objs)
+            skeleton.append(ground_nsrt)
+            atoms_sequence.append(
+                utils.apply_operator(ground_nsrt, atoms_sequence[-1]))
+        if len(skeleton) > max_horizon:
+            continue
+        metrics: Metrics = defaultdict(float)
+        metrics["num_nodes_expanded"] = expanded
+        metrics["num_nodes_created"] = created
+        metrics["num_skeletons_optimized"] = float(len(skeleton_strs_list))
+        metrics["num_failures_discovered"] = 0
+        metrics["plan_length"] = len(skeleton_str)
+        plan_candidates.append((skeleton, atoms_sequence, metrics))
+    if not plan_candidates:
+        raise PlanningFailure("All kstar skeletons exceed horizon!")
+    return plan_candidates
+
+
 def _sesame_plan_with_fast_downward(
     task: Task, option_model: _OptionModelBase, nsrts: Set[NSRT],
     predicates: Set[Predicate], types: Set[Type], timeout: float, seed: int,
@@ -1231,34 +1573,56 @@ def run_task_plan_once(
         if len(plan) > max_horizon:
             raise PlanningFailure(
                 "Skeleton produced by A-star exceeds horizon!")
-    elif "fd" in CFG.sesame_task_planner:  # pragma: no cover
-        fd_exec_path = os.environ["FD_EXEC_PATH"]
-        fd_script = os.path.join(fd_exec_path, "fast-downward.py")
-        exec_str = f'"{sys.executable}" "{fd_script}"'
-        timeout_cmd = "gtimeout" if sys.platform == "darwin" \
-            else "timeout"
-        # Run Fast Downward followed by cleanup. Capture the output.
-        assert "FD_EXEC_PATH" in os.environ, \
-            "Please follow instructions in the docstring of the" +\
-            "_sesame_plan_with_fast_downward method in planning.py"
-
+    else:  # pragma: no cover
         sesame_task_planner = CFG.sesame_task_planner
         if sesame_task_planner.endswith("-costs"):
             use_costs = True
             sesame_task_planner = sesame_task_planner[:-len("-costs")]
         else:
             use_costs = False
-
-        if sesame_task_planner == "fdopt":
-            alias_flag = "--alias seq-opt-lmcut"
-        elif sesame_task_planner == "fdsat":
-            alias_flag = "--alias lama-first"
-        else:
+        if sesame_task_planner not in {"fdopt", "fdsat", "kstar"}:
             raise ValueError("Unrecognized sesame_task_planner: "
                              f"{CFG.sesame_task_planner}")
 
+        timeout_cmd = "gtimeout" if sys.platform == "darwin" \
+            else "timeout"
+        if sesame_task_planner in {"fdopt", "fdsat"}:
+            assert "FD_EXEC_PATH" in os.environ, \
+                "Please set FD_EXEC_PATH for fdopt/fdsat planning."
+            planner_exec_path = os.environ["FD_EXEC_PATH"]
+        elif sesame_task_planner == "kstar":
+            assert "KSTAR_EXEC_PATH" in os.environ, \
+                "Please set KSTAR_EXEC_PATH for kstar planning."
+            planner_exec_path = os.environ["KSTAR_EXEC_PATH"]
+        else:
+            raise ValueError("Unrecognized sesame_task_planner: "
+                             f"{CFG.sesame_task_planner}")
+        fd_script = os.path.join(planner_exec_path, "fast-downward.py")
+        exec_str = f'"{sys.executable}" "{fd_script}"'
+
+        if sesame_task_planner == "fdopt":
+            alias_flag = "--alias seq-opt-lmcut"
+            translate_alias_flag = alias_flag
+        elif sesame_task_planner == "fdsat":
+            alias_flag = "--alias lama-first"
+            translate_alias_flag = alias_flag
+        elif sesame_task_planner == "kstar":
+            # OK* search via Fast Downward's kstar plugin.
+            # Example:
+            # --symmetries "sym=structural_symmetries(...)"
+            # --search "kstar(lmcut(), k=100, symmetries=sym)"
+            alias_flag = (
+                '--symmetries "sym=structural_symmetries('
+                "time_bound=0,search_symmetries=oss,"
+                'stabilize_initial_state=false,'
+                'keep_operator_symmetries=true)" '
+                '--search "kstar(lmcut(), k=100, symmetries=sym)"'
+            )
+            # SAS translation should not include kstar-specific planner flags.
+            # Any valid FD alias is fine for translation; use the default optimal one.
+            translate_alias_flag = "--alias seq-opt-lmcut"
         sas_file = generate_sas_file_for_fd(task, nsrts, preds, types, timeout,
-                                            timeout_cmd, alias_flag, exec_str,
+                                            timeout_cmd, translate_alias_flag, exec_str,
                                             list(objects), init_atoms)
 
         if use_costs:
@@ -1269,12 +1633,20 @@ def run_task_plan_once(
                                         default_ground_op_cost=default_cost,
                                         cost_precision=cost_precision)
 
-        plan, atoms_seq, metrics = fd_plan_from_sas_file(
-            sas_file, timeout_cmd, timeout, exec_str, alias_flag, start_time,
-            list(objects), init_atoms, nsrts, float(max_horizon))
-    else:
-        raise ValueError("Unrecognized sesame_task_planner: "
-                         f"{CFG.sesame_task_planner}")
+        if sesame_task_planner == "kstar":
+            plan_candidates = kstar_plan_from_sas_file(
+                sas_file, timeout_cmd, timeout, exec_str, alias_flag,
+                start_time, list(objects), init_atoms, nsrts,
+                float(max_horizon))
+            sorted_candidates = sort_kstar_plan_candidates(plan_candidates)
+            if not sorted_candidates:
+                raise PlanningFailure("No kstar plan candidates after sorting!")
+            plan, atoms_seq, metrics = sorted_candidates[0]
+        else:
+            plan, atoms_seq, metrics = fd_plan_from_sas_file(
+                sas_file, timeout_cmd, timeout, exec_str, alias_flag,
+                start_time, list(objects), init_atoms, nsrts,
+                float(max_horizon))
 
     necessary_atoms_seq = utils.compute_necessary_atoms_seq(
         plan, atoms_seq, goal)

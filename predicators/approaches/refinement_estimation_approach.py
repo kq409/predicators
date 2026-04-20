@@ -90,6 +90,10 @@ def _compute_ground_op_cost_from_region_probs(
                     region_probs_default.get(region_name, DEFAULT_SUCCESS_PROBABILITY))
         for p in elem_probs:
             cost = cost * (1 / max(p, EPSILON))
+        print(f"NSRT name: {nsrt_name}, cost: {cost}")
+        if cost > 100000:
+            cost = 100000
+            print(f"Clipped cost: {cost}")
         return cost
     return default_cost
 
@@ -169,7 +173,7 @@ class RefinementEstimationApproach(OracleApproach):
 
         # FD mode: use run_task_plan_once for a single skeleton
         # Supports fdopt, fdsat, fdopt-costs, fdsat-costs
-        fd_planners = ("fdopt", "fdsat", "fdopt-costs", "fdsat-costs")
+        fd_planners = ("fdopt", "fdsat", "fdopt-costs", "fdsat-costs", "kstar", "kstar-costs")
         if CFG.sesame_task_planner in fd_planners:
             ground_op_costs = None
             default_cost = 1.0
