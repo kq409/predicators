@@ -37,6 +37,9 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
     push_microhandle_thresh_pad: ClassVar[float] = 0.02
     turn_knob_tol: ClassVar[float] = 0.02  # for twisting the knob
     gripper_closed_threshold: ClassVar[float] = 0.03  # threshold for gripper closed
+    # Global move waypoint cache used across Move* option initiations.
+    _last_move_waypoint: ClassVar[Optional[tuple[tuple[float, float, float], np.ndarray]]] = None
+    _move_waypoint_log: ClassVar[list] = []
 
     @classmethod
     def get_env_names(cls) -> Set[str]:
@@ -86,6 +89,64 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _get_current_env() -> Optional[KitchenEnv]:
             return getattr(KitchenEnv, "_current_env", None)
 
+        def _get_move_start_waypoint() -> tuple[tuple[float, float, float], np.ndarray]:
+            """Return global move start waypoint; default to world origin."""
+            if cls._last_move_waypoint is None:
+                return cls.home_pos, np.array([1.0, 0.0, 0.0, 0.0],
+                                                 dtype=np.float64)
+            start_pos, start_quat = cls._last_move_waypoint
+            return start_pos, start_quat.copy()
+
+        def _record_move_waypoint(option_name: str, memory: Dict) -> None:
+            """Store move start/end waypoint globally for later initiations."""
+            if "waypoints" not in memory or not memory["waypoints"]:
+                return
+            start_pos, start_quat = _get_move_start_waypoint()
+            end_pos, end_quat = memory["waypoints"][-1]
+            end_pos_tup = tuple(float(v) for v in end_pos)
+            end_quat_arr = np.asarray(end_quat, dtype=np.float64).copy()
+            info = {
+                "option": option_name,
+                "start": (start_pos, start_quat.copy()),
+                "end": (end_pos_tup, end_quat_arr.copy()),
+            }
+            cls._move_waypoint_log.append(info)
+            cls._last_move_waypoint = (end_pos_tup, end_quat_arr)
+            memory["move_waypoint_info"] = info
+
+        def _get_estimation_tolerance(
+            objects: Sequence[Object], option_name: str, is_final_waypoint: bool
+        ) -> float:
+            """Tolerance aligned with kitchen/options.py Move settings."""
+            # Non-final waypoints use the Move policy tolerance logic.
+            if not is_final_waypoint:
+                if len(objects) == 2:
+                    return 0.015
+                if len(objects) == 3:
+                    return 0.05
+                return 0.05
+
+            # Final waypoint: special handling by option type.
+            if option_name == "MoveToTarget":
+                return 0.05
+
+            # Final waypoint for MoveTo: use MoveTo terminal tolerance logic.
+            if len(objects) == 2:
+                tol = KitchenGroundTruthOptionFactory.moveto_tol
+            elif len(objects) == 3:
+                tol = 0.05
+            else:
+                tol = 0.05
+            if len(objects) >= 2:
+                obj_name = objects[1].name
+                if obj_name == "microhandle":
+                    tol = 0.015
+                elif obj_name == "hinge2":
+                    tol = 0.03
+                elif obj_name == "slide":
+                    tol = 0.1
+            return tol
+
         def _teleport_object(obj: Object, target_xyz: Array) -> None:
             env = _get_current_env()
             if env is None:
@@ -120,13 +181,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                               params: Array) -> bool:
             # Store the target pose.
             gripper, obj = objects
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            gqw = state.get(gripper, "qw")
-            gqx = state.get(gripper, "qx")
-            gqy = state.get(gripper, "qy")
-            gqz = state.get(gripper, "qz")
+            del gripper  # Start waypoint comes from global move cache.
+            start_pos, start_quat = _get_move_start_waypoint()
+            gx, gy, gz = start_pos
+            gqw, gqx, gqy, gqz = start_quat
             ox = state.get(obj, "x")
             oy = state.get(obj, "y")
             oz = state.get(obj, "z")
@@ -179,11 +237,67 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                     (target_pose, target_quat),
                     ]
                 print(f"MoveTo slide waypoints: {memory['waypoints']}")
+            _record_move_waypoint("MoveTo", memory)
             return True
 
         def _MoveTo_policy(state: State, memory: Dict,
                            objects: Sequence[Object], params: Array) -> Action:
-            del state, memory, objects, params  # unused
+            del params  # unused
+            env = _get_current_env()
+            if env is not None and "waypoints" in memory and memory["waypoints"]:
+                try:
+                    gripper = objects[0]
+                    robot_env = env._gym_env.robot_env
+                    controller = robot_env.controller
+                    if "move_waypoint_info" in memory:
+                        start_pose, start_quat = memory["move_waypoint_info"]["start"]
+                    else:
+                        start_pose, start_quat = _get_move_start_waypoint()
+                    current_eef_pose = np.asarray(start_pose, dtype=np.float64)
+                    current_eef_quat = np.asarray(start_quat, dtype=np.float64)
+                    total_steps = 0
+                    num_waypoints = len(memory["waypoints"])
+                    for i, (target_pose, target_quat) in enumerate(memory["waypoints"]):
+                        tol = _get_estimation_tolerance(
+                            objects=objects,
+                            option_name="MoveTo",
+                            is_final_waypoint=(i == num_waypoints - 1),
+                        )
+                        segment_start_pose = current_eef_pose.copy()
+                        segment_start_quat = current_eef_quat.copy()
+                        result = controller.estimate_control_steps_with_dynamics(
+                            target_pos=np.asarray(target_pose, dtype=np.float64),
+                            target_quat=np.asarray(target_quat, dtype=np.float64),
+                            frame_skip=robot_env.frame_skip,
+                            pos_tolerance=tol,
+                            rot_tolerance=tol,
+                            max_control_steps=1000,
+                            gripper_ctrl=float(robot_env.data.ctrl[-1]),
+                        )
+                        total_steps += int(result["control_steps"])
+                        print(
+                            f"[MoveTo] waypoint {i + 1}/{len(memory['waypoints'])}:",
+                            "steps=", result["control_steps"],
+                            "converged=", result["converged"],
+                            "pos_err=", result["position_error_norm"],
+                            "rot_err=", result["rotation_error_norm"],
+                            "current_pose=", segment_start_pose,
+                            "current_quat=", segment_start_quat,
+                            "target_pose=", np.asarray(target_pose),
+                            "target_quat=", np.asarray(target_quat),
+                        )
+                        current_eef_pose = np.asarray(target_pose, dtype=np.float64)
+                        current_eef_quat = np.asarray(target_quat, dtype=np.float64)
+                    print(
+                        "[MoveTo] total estimated control steps:",
+                        total_steps,
+                        "current_pose:",
+                        current_eef_pose,
+                        "current_quat:",
+                        current_eef_quat,
+                    )
+                except Exception as exc:  # pragma: no cover - debug print path
+                    print(f"[MoveTo] step estimation failed: {exc}")
             return _no_op_action()
 
         def _MoveTo_terminal(state: State, memory: Dict,
@@ -209,10 +323,9 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                                           objects: Sequence[Object],
                                           params: Array) -> bool:
             # Store the target pose.
-            gripper, obj = objects
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
+            _, obj = objects
+            start_pos, _ = _get_move_start_waypoint()
+            gx, gy, gz = start_pos
             gripper_pose = (gx, gy - 0.1, gz + 0.1)
             ox = state.get(obj, "x")
             oy = state.get(obj, "y")
@@ -229,6 +342,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 (cls.home_pos, angled_quat),
                 (target_pose, target_quat),
             ]
+            _record_move_waypoint("MoveToPrePushOnTop", memory)
             return True
 
         move_to_pre_push_on_top = ParameterizedOption(
@@ -262,6 +376,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 (target_pose, angled_quat),
                 (target_pose, target_quat),
             ]
+            _record_move_waypoint("MoveToPrePullKettle", memory)
             return True
 
         move_to_pre_pull_kettle = ParameterizedOption(
@@ -660,15 +775,15 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _MoveToObservePosition_initiable(state: State, memory: Dict,
                                            objects: Sequence[Object],
                                            params: Array) -> bool:
-            gripper, container = objects
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
+            del state, objects, params  # start pose is global cache based
+            start_pos, _ = _get_move_start_waypoint()
+            gx, gy, gz = start_pos
             current_pose = (gx, gy, gz)
             memory["waypoints"] = [
                 (current_pose, down_quat),
                 (cls.home_pos, down_quat),
             ]
+            _record_move_waypoint("MoveToObservePosition", memory)
             return True
 
         def _MoveToObservePosition_policy(state: State, memory: Dict,
@@ -766,13 +881,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                                        params: Array) -> bool:
             from predicators.approaches import create_approach, ApproachTimeout, ApproachFailure
             gripper, obj, obj_place = objects
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            gqw = state.get(gripper, "qw")
-            gqx = state.get(gripper, "qx")
-            gqy = state.get(gripper, "qy")
-            gqz = state.get(gripper, "qz")
+            del gripper  # start pose is taken from global waypoint cache
+            start_pos, start_quat = _get_move_start_waypoint()
+            gx, gy, gz = start_pos
+            gqw, gqx, gqy, gqz = start_quat
             ox = state.get(obj, "x")
             oy = state.get(obj, "y")
             oz = state.get(obj, "z")
@@ -825,6 +937,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                 ]
                 print(f"obj_place: {obj_place.name}, obj: {obj.name}")
             # print(f"MoveToPrePickUp waypoints: {memory['waypoints']}")
+            _record_move_waypoint("MoveToPrePickUp", memory)
             return True
 
         def _MoveToPrePickUp_terminal(state: State, memory: Dict,
@@ -962,13 +1075,10 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _MoveToTarget_initiable(state: State, memory: Dict,
                                    objects: Sequence[Object], params: Array) -> bool:
             gripper, obj, origin, destination = objects
-            gx = state.get(gripper, "x")
-            gy = state.get(gripper, "y")
-            gz = state.get(gripper, "z")
-            gqw = state.get(gripper, "qw")
-            gqx = state.get(gripper, "qx")
-            gqy = state.get(gripper, "qy")
-            gqz = state.get(gripper, "qz")
+            del gripper  # start pose is taken from global waypoint cache
+            start_pos, start_quat = _get_move_start_waypoint()
+            gx, gy, gz = start_pos
+            gqw, gqx, gqy, gqz = start_quat
             tx = state.get(destination, "x")
             ty = state.get(destination, "y")
             tz = state.get(destination, "z")
@@ -1033,6 +1143,7 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
                     (target_pose, target_quat),
                 ]
                 print(f"MoveToTarget waypoints (default): {memory['waypoints']}")
+            _record_move_waypoint("MoveToTarget", memory)
             return True
 
 
@@ -1044,9 +1155,62 @@ class KitchenGroundTruthOptionFactory(GroundTruthOptionFactory):
         def _MoveToTarget_policy(state: State, memory: Dict,
                                  objects: Sequence[Object],
                                  params: Array) -> Action:
-            del state, memory  # unused
             _, obj, _, destination = objects
             dx, dy, dz = params
+            env = _get_current_env()
+            if env is not None and "waypoints" in memory and memory["waypoints"]:
+                try:
+                    robot_env = env._gym_env.robot_env
+                    controller = robot_env.controller
+                    if "move_waypoint_info" in memory:
+                        start_pose, start_quat = memory["move_waypoint_info"]["start"]
+                    else:
+                        start_pose, start_quat = _get_move_start_waypoint()
+                    current_eef_pose = np.asarray(start_pose, dtype=np.float64)
+                    current_eef_quat = np.asarray(start_quat, dtype=np.float64)
+                    total_steps = 0
+                    num_waypoints = len(memory["waypoints"])
+                    for i, (target_pose, target_quat) in enumerate(memory["waypoints"]):
+                        tol = _get_estimation_tolerance(
+                            objects=objects,
+                            option_name="MoveToTarget",
+                            is_final_waypoint=(i == num_waypoints - 1),
+                        )
+                        segment_start_pose = current_eef_pose.copy()
+                        segment_start_quat = current_eef_quat.copy()
+                        result = controller.estimate_control_steps_with_dynamics(
+                            target_pos=np.asarray(target_pose, dtype=np.float64),
+                            target_quat=np.asarray(target_quat, dtype=np.float64),
+                            frame_skip=robot_env.frame_skip,
+                            pos_tolerance=tol,
+                            rot_tolerance=tol,
+                            max_control_steps=1000,
+                            gripper_ctrl=float(robot_env.data.ctrl[-1]),
+                        )
+                        total_steps += int(result["control_steps"])
+                        print(
+                            f"[MoveToTarget] waypoint {i + 1}/{len(memory['waypoints'])}:",
+                            "steps=", result["control_steps"],
+                            "converged=", result["converged"],
+                            "pos_err=", result["position_error_norm"],
+                            "rot_err=", result["rotation_error_norm"],
+                            "current_pose=", segment_start_pose,
+                            "current_quat=", segment_start_quat,
+                            "target_pose=", np.asarray(target_pose),
+                            "target_quat=", np.asarray(target_quat),
+                        )
+                        current_eef_pose = np.asarray(target_pose, dtype=np.float64)
+                        current_eef_quat = np.asarray(target_quat, dtype=np.float64)
+                    print(
+                        "[MoveToTarget] total estimated control steps:",
+                        total_steps,
+                        "current_pose:",
+                        current_eef_pose,
+                        "current_quat:",
+                        current_eef_quat,
+                    )
+                except Exception as exc:  # pragma: no cover - debug print path
+                    print(f"[MoveToTarget] step estimation failed: {exc}")
             target_xyz = np.array([
                 KitchenEnv.obj_name_to_xyz[destination.name][0] + dx,
                 KitchenEnv.obj_name_to_xyz[destination.name][1] + dy,

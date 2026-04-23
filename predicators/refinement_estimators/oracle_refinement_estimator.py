@@ -37,7 +37,7 @@ class OracleRefinementEstimator(BaseRefinementEstimator):
             return exit_garage_oracle_estimator(self._env, initial_task.init,
                                                 skeleton, atoms_sequence)
 
-        if env_name == "kitchen":
+        if env_name in {"kitchen", "kitchen_v2"}:
             # Per-object region probabilities, computed from per-object results_*.txt
             region_probs_by_obj = calculate_kitchen_region_probs_by_object(
                 self._env, initial_task.init)

@@ -744,6 +744,7 @@ class GlobalSettings:
             perceiver=defaultdict(lambda: "trivial", {
                 "sokoban": "sokoban",
                 "kitchen": "kitchen",
+                "kitchen_v2": "kitchen_v2",
             })[args.get("env", "")],
             # Horizon for each environment. When checking if a policy solves a
             # task, we run the policy for at most this many steps.
@@ -757,6 +758,7 @@ class GlobalSettings:
                     "doors": 1000,
                     "coffee": 1000,
                     "kitchen": 1000,
+                    "kitchen_v2": 1000,
                     # For the very simple touch point environment, restrict
                     # the horizon to be shorter.
                     "touch_point": 15,
@@ -815,6 +817,7 @@ class GlobalSettings:
                     "tools": 1000,
                     "stick_button": 1000,
                     "kitchen": 1000,    # TODO: Changed for kitchen env.
+                    "kitchen_v2": 1000,
                     "stick_button_move": 1000
                 })[args.get("env", "")],
 

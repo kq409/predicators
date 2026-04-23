@@ -8,7 +8,7 @@ attempting to refine them in this order.
 import json
 import logging
 from pathlib import Path
-from typing import Any, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from gym.spaces import Box
 
@@ -22,6 +22,64 @@ from predicators.structs import NSRT, Metrics, ParameterizedOption, \
     Predicate, Task, Type, _GroundNSRT, _Option, GroundAtom
 
 from math import log, log10
+
+
+def _load_option_execution_costs(summary_path: Path) -> Dict[Tuple[str, str], float]:
+    """Load option mean env-step costs from option execution summary JSON."""
+    if not summary_path.exists():
+        logging.warning("Physical cost summary not found: %s", summary_path)
+        return {}
+    try:
+        with open(summary_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as err:
+        logging.warning("Failed reading physical cost summary %s: %s", summary_path, err)
+        return {}
+    if not isinstance(payload, list):
+        logging.warning(
+            "Physical cost summary format invalid (expected list): %s",
+            summary_path,
+        )
+        return {}
+    costs: Dict[Tuple[str, str], float] = {}
+    for rec in payload:
+        if not isinstance(rec, dict):
+            continue
+        option_name = str(rec.get("option_name", "")).strip().lower()
+        if not option_name:
+            continue
+        key = str(rec.get("object_names_key", "")).strip().lower()
+        if not key:
+            obj_names = rec.get("object_names", [])
+            if isinstance(obj_names, list):
+                key = "|".join(str(x).strip().lower() for x in obj_names)
+        try:
+            mean_steps = float(rec.get("num_env_steps_mean", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if mean_steps <= 0.0:
+            continue
+        costs[(option_name, key)] = mean_steps
+    return costs
+
+
+def _lookup_physical_cost_from_option_summary(
+    ground_nsrt: _GroundNSRT,
+    option_costs: Dict[Tuple[str, str], float],
+) -> Optional[Tuple[float, str]]:
+    """Lookup physical cost using fully-matched option name + objects.
+
+    Returns (cost, matched_object_names_key) if matched, else None.
+    """
+    option_name = str(ground_nsrt.option.name).strip().lower()
+    option_obj_names = [getattr(o, "name", str(o)).lower() for o in ground_nsrt.option_objs]
+    exact_key = "|".join(option_obj_names)
+    sorted_key = "|".join(sorted(option_obj_names))
+    for key in (exact_key, sorted_key):
+        val = option_costs.get((option_name, key))
+        if val is not None:
+            return float(val), key
+    return None
 
 
 def _lookup_ground_op_cost(
@@ -53,7 +111,7 @@ def _compute_ground_op_cost_from_region_probs(
     ObserveContainer*: cost = 1.0 / success_prob (base=1, determinization)."""
     DEFAULT_SUCCESS_PROBABILITY = 1.0 / 3.0
     EPSILON = 1e-2
-    BASE_COST_OBSERVE = 1
+    BASE_COST_OBSERVE = 40
     container_to_region = {
         "microhandle": "microwave",
         "hinge2": "right_hinge_cabinet",
@@ -90,7 +148,7 @@ def _compute_ground_op_cost_from_region_probs(
                     region_probs_default.get(region_name, DEFAULT_SUCCESS_PROBABILITY))
         for p in elem_probs:
             cost = cost * (1 / max(p, EPSILON))
-        print(f"NSRT name: {nsrt_name}, cost: {cost}")
+        print(f"NSRT name: {nsrt_name}, objects: {found_obj_names}, cost: {cost}")
         if cost > 100000:
             cost = 100000
             print(f"Clipped cost: {cost}")
@@ -189,19 +247,70 @@ class RefinementEstimationApproach(OracleApproach):
                     CFG, "fd_region_probs_default", None) or {}
                 cost_by_name = getattr(
                     CFG, "fd_ground_op_cost_by_name", None) or {}
-                if region_probs_by_obj or region_probs_default:
-                    ground_op_costs = {
-                        gn.op: _compute_ground_op_cost_from_region_probs(
+                use_real_physical_costs = bool(
+                    getattr(CFG, "use_real_physical_option_costs", False)
+                )
+                summary_path_raw = str(
+                    getattr(
+                        CFG,
+                        "real_physical_cost_summary_json",
+                        "experiment_results/option_execution_summary.json",
+                    )
+                ).strip()
+                option_costs: Dict[Tuple[str, str], float] = {}
+                if use_real_physical_costs and summary_path_raw:
+                    option_costs = _load_option_execution_costs(Path(summary_path_raw))
+                    logging.info(
+                        "[FD costs] using physical option costs from %s (%d entries)",
+                        summary_path_raw,
+                        len(option_costs),
+                    )
+
+                def _fallback_cost(gn: _GroundNSRT) -> float:
+                    if region_probs_by_obj or region_probs_default:
+                        return _compute_ground_op_cost_from_region_probs(
                             gn, region_probs_by_obj, region_probs_default,
                             default_cost)
-                        for gn in ground_nsrts
-                    }
-                else:
-                    ground_op_costs = {
-                        gn.op: _lookup_ground_op_cost(
-                            gn, cost_by_name, default_cost)
-                        for gn in ground_nsrts
-                    }
+                    return _lookup_ground_op_cost(gn, cost_by_name, default_cost)
+
+                ground_op_costs = {}
+                for gn in ground_nsrts:
+                    # Keep ObserveContainer-related actions on the original cost path.
+                    if gn.name.startswith("ObserveContainer"):
+                        ground_op_costs[gn.op] = _fallback_cost(gn)
+                        continue
+                    if option_costs:
+                        matched = _lookup_physical_cost_from_option_summary(
+                            gn, option_costs
+                        )
+                        if matched is not None:
+                            physical_cost, matched_key = matched
+                            old_cost = _fallback_cost(gn)
+                            ground_op_costs[gn.op] = physical_cost
+                            logging.info(
+                                "[FD costs replaced] nsrt=%s option=%s option_objs=%s "
+                                "matched_key=%s old_cost=%.6f new_cost=%.6f",
+                                gn.name,
+                                gn.option.name,
+                                [getattr(o, "name", str(o)) for o in gn.option_objs],
+                                matched_key,
+                                old_cost,
+                                physical_cost,
+                            )
+                            continue
+                        # Penalize unmatched MoveToTargetObject to avoid shortcut plans.
+                        if gn.name == "MoveToTargetObject" or gn.name == "MoveToolTo":
+                            ground_op_costs[gn.op] = 1000.0
+                            # logging.info(
+                            #     "[FD costs unmatched] nsrt=%s option=%s option_objs=%s "
+                            #     "assigned_cost=%.1f",
+                            #     gn.name,
+                            #     gn.option.name,
+                            #     [getattr(o, "name", str(o)) for o in gn.option_objs],
+                            #     ground_op_costs[gn.op],
+                            # )
+                            continue
+                    ground_op_costs[gn.op] = _fallback_cost(gn)
             try:
                 plan, atoms_seq, metrics = run_task_plan_once(
                     task,
