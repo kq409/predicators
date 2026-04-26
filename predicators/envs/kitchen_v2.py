@@ -192,10 +192,10 @@ class KitchenV2Env(BaseEnv):
         ("sponge", "slide"): (0.0, -0.1, 0.1),
         ("sponge", "microhandle"): (0.0, -0.1, 0.1),
         ("sponge", "countertop"): (-0.1, 0.1, 0.22),
-        ("tea", "hinge2"): (0.0, -0.13, 0.15),
-        ("tea", "slide"): (0.0, -0.13, 0.15),
+        ("tea", "hinge2"): (0.0, -0.10, 0.15),
+        ("tea", "slide"): (0.0, -0.10, 0.15),
         ("tea", "microhandle"): (0.0, -0.1, 0.1),
-        ("tea", "countertop"): (-0.13, 0.13, 0.22),
+        ("tea", "countertop"): (0.0, 0.15, 0.2),
         ("milk", "hinge2"): (0.0, -0.13, 0.15),
         ("milk", "slide"): (0.0, -0.13, 0.1),
         ("milk", "microhandle"): (0.0, -0.1, 0.1),
@@ -446,6 +446,9 @@ README of that repo suggests!"
             goal_preds.add(MugOnCountertop)
         if CFG.kitchen_goals in ["all", "put_tea_on_countertop"]:
             goal_preds.add(TeaOnCountertop)
+        if CFG.kitchen_goals in ["all", "put_tea_and_mug_on_countertop"]:
+            goal_preds.add(TeaOnCountertop)
+            goal_preds.add(MugOnCountertop)
         if CFG.kitchen_goals in ["all", "clean_mug"]:
             goal_preds.add(MugWashed)
         if CFG.kitchen_goals in ["all", "make_tea"]:
@@ -1060,6 +1063,8 @@ README of that repo suggests!"
             return mug_on_countertop
         if goal_desc == ("Put the tea on the countertop"):
             return tea_on_countertop
+        if goal_desc == ("Put the tea and mug on the countertop"):
+            return mug_on_countertop and tea_on_countertop
         if goal_desc == ("Clean the mug"):
             return mug_washed
         if goal_desc == ("Make a cup of tea"):
@@ -1074,7 +1079,7 @@ README of that repo suggests!"
 
         assert CFG.kitchen_goals in [
             "all", "kettle_only", "knob_only", "light_only", "boil_kettle", "put_mug_on_countertop", "clean_mug", "make_tea",
-             "make_milk_tea", "put_tea_on_countertop"
+             "make_milk_tea", "put_tea_on_countertop", "put_tea_and_mug_on_countertop"
         ]
         goal_descriptions: List[str] = []
         if CFG.kitchen_goals in ["all", "kettle_only"]:
@@ -1106,6 +1111,8 @@ README of that repo suggests!"
             goal_descriptions.append("Put the mug on the countertop")
         if CFG.kitchen_goals in ["all", "put_tea_on_countertop"]:
             goal_descriptions.append("Put the tea on the countertop")
+        if CFG.kitchen_goals in ["all", "put_tea_and_mug_on_countertop"]:
+            goal_descriptions.append("Put the tea and mug on the countertop")
         if CFG.kitchen_goals in ["all", "clean_mug"]:
             goal_descriptions.append("Clean the mug")
         if CFG.kitchen_goals in ["all", "make_tea"]:

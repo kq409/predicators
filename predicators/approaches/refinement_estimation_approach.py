@@ -63,6 +63,33 @@ def _load_option_execution_costs(summary_path: Path) -> Dict[Tuple[str, str], fl
     return costs
 
 
+def _repo_root_for_experiment_artifacts() -> Path:
+    """``.../predicators/predicators/approaches/this_file`` -> repo root (``diffusion_behavior``)."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _resolve_physical_cost_summary_json_path() -> Path:
+    """Resolve JSON used for ``num_env_steps_mean``; prefers per-task max_likelihood summaries."""
+    raw = str(getattr(CFG, "real_physical_cost_summary_json", "") or "").strip()
+    use_phys = bool(getattr(CFG, "use_real_physical_option_costs", False))
+    repo = _repo_root_for_experiment_artifacts()
+    default_path = repo / "experiment_results" / "option_execution_summary.json"
+    primary = Path(raw).expanduser() if raw else default_path
+    if not use_phys:
+        return primary
+    if primary.is_file():
+        return primary
+    batch_tid = getattr(CFG, "batch_task_id", None)
+    if batch_tid is not None:
+        alt = repo / "experiment_results" / "max_likelihood" / (
+            f"option_execution_summary_task_{int(batch_tid)}.json"
+        )
+        if alt.is_file():
+            logging.info("[FD costs] physical cost summary (per-task): %s", alt)
+            return alt
+    return primary
+
+
 def _lookup_physical_cost_from_option_summary(
     ground_nsrt: _GroundNSRT,
     option_costs: Dict[Tuple[str, str], float],
@@ -111,7 +138,8 @@ def _compute_ground_op_cost_from_region_probs(
     ObserveContainer*: cost = 1.0 / success_prob (base=1, determinization)."""
     DEFAULT_SUCCESS_PROBABILITY = 1.0 / 3.0
     EPSILON = 1e-2
-    BASE_COST_OBSERVE = 40
+    base_cost_observe = float(
+        getattr(CFG, "refinement_estimation_base_cost_observe", 1.0))
     container_to_region = {
         "microhandle": "microwave",
         "hinge2": "right_hinge_cabinet",
@@ -129,9 +157,9 @@ def _compute_ground_op_cost_from_region_probs(
     #     num_effects = len(found_obj_names)
     #     return 0.1 + 0.1 * num_effects
     if nsrt_name.startswith("ObserveContainer"):
-        cost = BASE_COST_OBSERVE
+        cost = base_cost_observe
         # if len(ground_nsrt.objects) < 2:
-        #     return BASE_COST_OBSERVE
+        #     return base_cost_observe
         container_name = getattr(ground_nsrt.objects[1], "name", str(ground_nsrt.objects[1]))
         region_name = container_to_region.get(container_name, "right_hinge_cabinet")
         found_obj_names = sorted({
@@ -250,19 +278,13 @@ class RefinementEstimationApproach(OracleApproach):
                 use_real_physical_costs = bool(
                     getattr(CFG, "use_real_physical_option_costs", False)
                 )
-                summary_path_raw = str(
-                    getattr(
-                        CFG,
-                        "real_physical_cost_summary_json",
-                        "experiment_results/option_execution_summary.json",
-                    )
-                ).strip()
+                summary_path = _resolve_physical_cost_summary_json_path()
                 option_costs: Dict[Tuple[str, str], float] = {}
-                if use_real_physical_costs and summary_path_raw:
-                    option_costs = _load_option_execution_costs(Path(summary_path_raw))
+                if use_real_physical_costs:
+                    option_costs = _load_option_execution_costs(summary_path)
                     logging.info(
                         "[FD costs] using physical option costs from %s (%d entries)",
-                        summary_path_raw,
+                        summary_path,
                         len(option_costs),
                     )
 

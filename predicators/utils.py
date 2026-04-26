@@ -1276,7 +1276,6 @@ def option_policy_to_policy(
     cur_option = DummyOption
     num_cur_option_steps = 0
     last_state: Optional[State] = None
-
     def _policy(state: State) -> Action:
         nonlocal cur_option, num_cur_option_steps, last_state
 

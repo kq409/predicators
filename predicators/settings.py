@@ -636,6 +636,8 @@ class GlobalSettings:
     refinement_estimator = "oracle"  # default refinement cost estimator
     # refinement_estimator = "per_skeleton"  # default refinement cost estimator
     refinement_estimation_num_skeletons_generated = 8
+    # Base multiplicative cost for ObserveContainer* in FD region-prob costing.
+    refinement_estimation_base_cost_observe = 1
 
     # refinement data collection parameters
     refinement_data_num_skeletons = 8

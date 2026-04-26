@@ -208,6 +208,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                     tol = 0.015
             elif len(objects) == 3:
                 tol = 0.05
+                # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f}) | Waypoint position: {way_pos} | Distance: {distance:.4f} | Distance to object: {distance_obj:.4f}")
             else:
                 tol = 0.05
             # print(f"\rCurrent position: ({gx:.4f}, {gy:.4f}, {gz:.4f}) | Waypoint position: {way_pos} | Distance: {distance:.4f} | Distance to object: {distance_obj:.4f}", end="", flush=True)
@@ -230,18 +231,16 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                 # For len(objects) == 3, normalize the motion part separately
                 motion_arr = np.array([dx, dy, dz, droll, dpitch, dyaw],
                                       dtype=np.float32)
-                action_mag = np.linalg.norm(motion_arr)
-                if action_mag > cls.max_delta_mag:
-                    scale = cls.max_delta_mag / action_mag
+                if np.linalg.norm(motion_arr) > cls.max_delta_mag:
+                    scale = cls.max_delta_mag / np.linalg.norm(motion_arr)
                     motion_arr = motion_arr * scale
                 arr = np.concatenate(
                     [motion_arr, np.array([grip], dtype=np.float32)])
             else:
                 arr = np.array([dx, dy, dz, droll, dpitch, dyaw, grip],
                                dtype=np.float32)
-                action_mag = np.linalg.norm(arr)
-                if action_mag > cls.max_delta_mag:
-                    scale = cls.max_delta_mag / action_mag
+                if np.linalg.norm(arr) > cls.max_delta_mag:
+                    scale = cls.max_delta_mag / np.linalg.norm(arr)
                     arr = arr * scale
             # print(f"Action magnitude: {np.linalg.norm(arr)}")
             # print(f"Action: {arr}")
@@ -1151,9 +1150,14 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                     tol = 0.07
                 if obj.name == "mug":
                     tol = 0.07
+                if obj.name == "tea":
+                    tol = 0.07
             elif obj_place.name == "microhandle":
                 # tol = 0.2
                 tol = 0.05
+            elif obj_place.name == "slide":
+                if obj.name == "tea":
+                    tol = 0.07
             
             # print(f"MoveToPreTurnOn Debug Info:")
             # print(f"Current position: ({gx:.4f}, {gy:.4f}, {gz:.4f})")
@@ -1161,10 +1165,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             # print(f"Distance: {distance:.4f}")
             # print(f"Tolerance: {tol}")
             # print(f"Is reached: {np.allclose((gx, gy, gz), target_pos, atol=cls.moveto_tol)}")
-
-            return np.allclose((gx, gy, gz),
-                               memory["waypoints"][-1][0],
-                               atol=tol)
+            return np.allclose((gx, gy, gz), memory["waypoints"][-1][0], atol=tol)
 
         MoveToPrePickUp = ParameterizedOption(
             "MoveToPrePickUp",
@@ -1327,12 +1328,12 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             if origin.name == "hinge2":
                 target_quat = angled_quat
                 memory["waypoints"] = [
-                    ((gx, gy - 0.2, gz + 0.1), current_quat),
-                    ((gx + 0.05, gy - 0.25, gz + 0.1), current_quat),
+                    ((gx + 0.05, gy - 0.2, gz + 0.05), current_quat),
+                    ((gx + 0.05, gy - 0.25, gz + 0.05), current_quat),
                     ((home_x, home_y, home_z), angled_quat),
                     # ((tx + dx, ty + dy, tz + dz), target_quat),
-                    ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
-                    ((tx + dx, ty + dy, tz + dz), angled_quat),
+                    ((tx + dx, ty + dy, tz + dz + 0.2), current_quat),
+                    ((tx + dx, ty + dy, tz + dz), current_quat),
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             elif origin.name == "slide":
@@ -1343,8 +1344,8 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                         ((gx - 0.03, gy - 0.15, gz+ 0.05), current_quat),
                         ((gx, gy - 0.3, gz + 0.05), current_quat),
                         (cls.home_pos, angled_quat),
-                        ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
-                        ((tx + dx, ty + dy, tz + dz), angled_quat),
+                        ((tx + dx, ty + dy, tz + dz + 0.2), current_quat),
+                        ((tx + dx, ty + dy, tz + dz), current_quat),
                     ]
                     else:
                         memory["waypoints"] = [
@@ -1370,8 +1371,8 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                     ((gx, gy - 0.15, gz + 0.1), current_quat),
                     ((gx, gy - 0.2, gz + 0.1), down_quat),
                     (cls.home_pos, angled_quat),
-                    ((tx + dx, ty + dy, tz + dz + 0.2), angled_quat),
-                    ((tx + dx, ty + dy, tz + dz), angled_quat),
+                    ((tx + dx, ty + dy, tz + dz + 0.2), current_quat),
+                    ((tx + dx, ty + dy, tz + dz), current_quat),
                 ]
                 print(f"MoveToTarget waypoints: {memory['waypoints']}")
             elif origin.name == "keycard_table":
@@ -1406,13 +1407,23 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             tx = state.get(destination, "x")
             ty = state.get(destination, "y")
             tz = state.get(destination, "z")
+            ox = state.get(obj, "x")
+            oy = state.get(obj, "y")
+            oz = state.get(obj, "z")
 
             waypoint_pos = memory["waypoints"][0][0]
             distance = np.linalg.norm(np.array([gx, gy, gz]) - np.array(waypoint_pos))
+            distance_xy = np.linalg.norm(np.array([ox, oy]) - np.array([tx, ty]))
 
-            reached = np.allclose((gx, gy, gz),
-                                  memory["waypoints"][-1][0],
-                                  atol=0.05)
+            reached_by_gripper = np.allclose((gx, gy, gz),
+                                             memory["waypoints"][-1][0],
+                                             atol=0.05)
+            # For countertop placements, we care that the carried object reaches
+            # the countertop target in XY; strict gripper XYZ matching can stall.
+            # reached_by_object_xy = (destination.name == "countertop" and
+            #                         distance_xy <= 0.08)
+            reached = reached_by_gripper
+            # print(f"Object Distance: {np.linalg.norm(np.array([ox, oy, oz]) - np.array((tx, ty, tz)))}, XY Distance: {distance_xy}")
             # Align ``Unlocked(hinge2)`` with executed UnlockHinge (MoveToTarget).
             if reached and obj.name == "keycard" and destination.name == "hinge2":
                 KitchenV2Env.set_hinge2_unlocked(True)
@@ -1430,7 +1441,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
         # Place
         def _Place_policy(state: State, memory: Dict,
                          objects: Sequence[Object], params: Array) -> Action:
-            del memory, params  # unused
+            del params  # unused
             gripper = objects[0]
             finger1_pos = state.get(gripper, "finger1_pos")
             finger2_pos = state.get(gripper, "finger2_pos")

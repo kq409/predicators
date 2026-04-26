@@ -1491,9 +1491,10 @@ class KitchenV2GroundTruthNSRTFactory(GroundTruthNSRTFactory):
         option = MakeTea
         option_vars = [gripper, tea, mug, destination]
 
-        make_tea_nsrt = NSRT("MakeTea", parameters, preconditions,
-                             add_effects, delete_effects, ignore_effects,
-                             option, option_vars, place_sampler)
+        # TODO
+        # make_tea_nsrt = NSRT("MakeTea", parameters, preconditions,
+        #                      add_effects, delete_effects, ignore_effects,
+        #                      option, option_vars, place_sampler)
 
         # PlaceTeaOnTable
         parameters = [gripper, tea, mug, destination]
@@ -1671,5 +1672,5 @@ class KitchenV2GroundTruthNSRTFactory(GroundTruthNSRTFactory):
         nsrts.add(place_milk_on_table_nsrt)
         nsrts.add(make_milk_tea_nsrt)
         nsrts.add(wash_mug_nsrt)
-        nsrts.add(make_tea_nsrt)
+        # nsrts.add(make_tea_nsrt)
         return nsrts

@@ -36,25 +36,6 @@ from predicators.utils import EnvironmentFailure, _TaskPlanningHeuristic
 _NOT_CAUSES_FAILURE = "NotCausesFailure"
 
 
-def _agent_debug_session_log(payload: Dict[str, Any]) -> None:
-    # #region agent log
-    try:
-        log_path = os.path.join(
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
-            "debug-2c2cd5.log",
-        )
-        row: Dict[str, Any] = {
-            "sessionId": "2c2cd5",
-            "timestamp": int(time.time() * 1000),
-            **payload,
-        }
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row, default=str) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
-
 @dataclass(repr=False, eq=False)
 class _Node:
     """A node for the search over skeletons."""
@@ -1087,42 +1068,11 @@ def fd_plan_from_sas_file(
     # shell ``timeout`` on FD plus translation can exceed ``timeout`` and raise
     # ``PlanningTimeout`` even when the search budget was intended to be shared.
     fd_subprocess_timeout = max(0.01, float(timeout) - elapsed_pre)
-    # #region agent log
-    _agent_debug_session_log({
-        "hypothesisId": "H4",
-        "location": "planning.py:fd_plan_from_sas_file",
-        "message": "fd_before_subprocess",
-        "data": {
-            "elapsed_since_plan_start": round(elapsed_pre, 4),
-            "timeout": timeout,
-            "fd_subprocess_timeout": round(fd_subprocess_timeout, 4),
-            "sas_basename": os.path.basename(sas_file),
-            "num_init_atoms": len(init_atoms),
-        },
-    })
-    # #endregion
     cmd_str = (
         f"{timeout_cmd} {fd_subprocess_timeout} {exec_str} {alias_flag} {sas_file}")
     output = subprocess.getoutput(cmd_str)
     cleanup_cmd_str = f"{exec_str} --cleanup"
     subprocess.getoutput(cleanup_cmd_str)
-    # #region agent log
-    _elapsed = time.perf_counter() - start_time
-    _wall_exceeded = _elapsed > timeout
-    _expanded = re.findall(r"Expanded (\d+) state", output)
-    _agent_debug_session_log({
-        "hypothesisId": "H4",
-        "location": "planning.py:fd_plan_from_sas_file",
-        "message": "fd_after_subprocess",
-        "data": {
-            "elapsed_since_plan_start": round(_elapsed, 4),
-            "wall_clock_exceeds_timeout": _wall_exceeded,
-            "output_len": len(output),
-            "output_tail": output[-2500:] if output else "",
-            "expanded_matches": _expanded[-3:] if _expanded else [],
-        },
-    })
-    # #endregion
     if time.perf_counter() - start_time > timeout:
         raise PlanningTimeout("Planning timed out in call to FD!")
     # Parse and log metrics.
@@ -1609,57 +1559,6 @@ def run_task_plan_once(
     objects = set(task.init)
 
     start_time = time.perf_counter()
-
-    # #region agent log
-    _hinge_atoms = sorted(
-        str(a) for a in init_atoms
-        if any(s in str(a).lower() for s in (
-            "hinge2", "tea", "slide", "microhandle", "unlocked",
-            "open(", "closed(", "observed", "objectfound", "notobserved",
-        ))
-    )
-    _dbg_kitchen: Dict[str, Any] = {}
-    try:
-        if getattr(CFG, "env", None) == "kitchen_v2":
-            from predicators.envs.kitchen_v2 import KitchenV2Env
-            _st = task.init
-            _h2 = KitchenV2Env.object_name_to_object("hinge2")
-            _tea = KitchenV2Env.object_name_to_object("tea")
-            _grip = KitchenV2Env.object_name_to_object("gripper")
-            _o_open = bool(KitchenV2Env.Open_holds(_st, [_h2]))
-            _o_closed = bool(KitchenV2Env.Closed_holds(_st, [_h2]))
-            _dbg_kitchen = {
-                "hinge2_x": float(_st.get(_h2, "x")),
-                "hinge2_angle": float(_st.get(_h2, "angle")),
-                "hinge2_observed_field": bool(_st.get(_h2, "observed")),
-                "tea_xyz": [float(_st.get(_tea, k)) for k in ("x", "y", "z")],
-                "Open_hinge2": _o_open,
-                "Closed_hinge2": _o_closed,
-                "open_and_closed_overlap": _o_open and _o_closed,
-                "neither_open_nor_closed": (not _o_open) and (not _o_closed),
-                "Observed_hinge2": bool(KitchenV2Env._Observed_holds(_st, [_h2])),
-                "Unlocked_hinge2": bool(KitchenV2Env._Unlocked_holds(_st, [_h2])),
-                "ContainsTea_hinge2": bool(
-                    KitchenV2Env._ContainsTea_holds(_st, [_grip, _h2])),
-                "ObjectFound_tea_hinge2": bool(
-                    KitchenV2Env._ObjectFound_holds(_st, [_tea, _h2])),
-            }
-    except Exception as _e:
-        _dbg_kitchen = {"kitchen_v2_debug_error": str(_e)}
-    _agent_debug_session_log({
-        "hypothesisId": "H1-H2-H3-H5",
-        "location": "planning.py:run_task_plan_once",
-        "message": "task_planning_init_snapshot",
-        "data": {
-            "env": getattr(CFG, "env", None),
-            "sesame_task_planner": getattr(CFG, "sesame_task_planner", None),
-            "init_atoms_hinge_tea_slice": _hinge_atoms[:80],
-            "init_atoms_hinge_tea_count": len(_hinge_atoms),
-            "goal_atoms": sorted(str(g) for g in goal),
-            "kitchen_hinge2_tea": _dbg_kitchen,
-        },
-    })
-    # #endregion
 
     if CFG.sesame_task_planner == "astar":
         ground_nsrts, reachable_atoms = task_plan_grounding(

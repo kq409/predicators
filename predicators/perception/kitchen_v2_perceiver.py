@@ -81,6 +81,11 @@ class KitchenV2Perceiver(BasePerceiver):
             goal = {GroundAtom(MugOnCountertop, [mug, countertop])}
         elif goal_desc == "Put the tea on the countertop":
             goal = {GroundAtom(TeaOnCountertop, [tea, countertop])}
+        elif goal_desc == "Put the tea and mug on the countertop":
+            goal = {
+                GroundAtom(TeaOnCountertop, [tea, countertop]),
+                GroundAtom(MugOnCountertop, [mug, countertop])
+            }
         elif goal_desc == "CleanMug" or goal_desc == "Clean the mug":
             goal = {
                 GroundAtom(MugWashed, [sponge, countertop])
