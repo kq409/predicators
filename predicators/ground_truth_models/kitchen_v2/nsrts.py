@@ -148,7 +148,7 @@ class KitchenV2GroundTruthNSRTFactory(GroundTruthNSRTFactory):
         add_effects = {LiftedAtom(AtPreTurnOff, [gripper, on_off_obj])}
         delete_effects: Set[LiftedAtom] = set()
         ignore_effects = {
-            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp
         }
         option = MoveToPreTurnOff
         option_vars = [gripper, on_off_obj]
@@ -174,7 +174,7 @@ class KitchenV2GroundTruthNSRTFactory(GroundTruthNSRTFactory):
         add_effects = {LiftedAtom(AtPreTurnOn, [gripper, on_off_obj])}
         delete_effects = set()
         ignore_effects = {
-            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp
         }
         option = MoveToPreTurnOn
         option_vars = [gripper, on_off_obj]
@@ -1256,7 +1256,7 @@ class KitchenV2GroundTruthNSRTFactory(GroundTruthNSRTFactory):
         add_effects = {LiftedAtom(AtPrePickUp, [gripper, obj, container])}
         delete_effects = set()
         ignore_effects = {
-            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle
+            AtPreTurnOn, AtPrePushOnTop, AtPreTurnOff, AtPrePullKettle, AtPrePickUp
         }
         option = MoveToPrePickUp
         option_vars = [gripper, obj, container]
@@ -1286,8 +1286,11 @@ class KitchenV2GroundTruthNSRTFactory(GroundTruthNSRTFactory):
         def pick_object_sampler(state: State, goal: Set[GroundAtom],
                                 rng: np.random.Generator,
                                 objs: Sequence[Object]) -> Array:
-            del state, goal, rng, objs  # unused
-            return np.array([0.0, 0.0, 0.0], dtype=np.float32)
+            del state, goal, rng  # unused
+            gripper, obj, container = objs
+            params = np.array(KitchenV2Env.get_pick_delta_pos([obj, container]),
+                            dtype=np.float32)
+            return params
 
         pick_object_nsrt = NSRT(
             "PickObject", parameters, preconditions,

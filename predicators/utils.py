@@ -1340,7 +1340,9 @@ def nsrt_plan_to_greedy_option_policy(
     nsrt_plan: Sequence[_GroundNSRT],
     goal: Set[GroundAtom],
     rng: np.random.Generator,
-    necessary_atoms_seq: Optional[Sequence[Set[GroundAtom]]] = None
+    necessary_atoms_seq: Optional[Sequence[Set[GroundAtom]]] = None,
+    pre_next_option_hook: Optional[Callable[[_GroundNSRT, State, Set[GroundAtom]],
+                                            None]] = None,
 ) -> Callable[[State], _Option]:
     """Greedily execute an NSRT plan, assuming downward refinability and that
     any sample will work.
@@ -1355,9 +1357,13 @@ def nsrt_plan_to_greedy_option_policy(
         necessary_atoms_seq = [empty_atoms for _ in range(len(nsrt_plan) + 1)]
     assert len(necessary_atoms_seq) == len(nsrt_plan) + 1
     necessary_atoms_queue = list(necessary_atoms_seq)
+    last_completed_nsrt: Optional[_GroundNSRT] = None
 
     def _option_policy(state: State) -> _Option:
-        nonlocal cur_nsrt
+        nonlocal cur_nsrt, last_completed_nsrt
+        if pre_next_option_hook is not None and last_completed_nsrt is not None:
+            pre_next_option_hook(last_completed_nsrt, state, goal)
+            last_completed_nsrt = None
         # First check if the goal has been achieved
 
         if all(atom.holds(state) for atom in goal):
@@ -1391,6 +1397,7 @@ def nsrt_plan_to_greedy_option_policy(
         cur_option = cur_nsrt.sample_option(state, goal, rng)
         logging.debug(f"Using option {cur_option.name}{cur_option.objects}"
                       f"{cur_option.params} from NSRT plan.")
+        last_completed_nsrt = cur_nsrt
         return cur_option
 
     return _option_policy
@@ -1400,7 +1407,9 @@ def nsrt_plan_to_greedy_policy(
     nsrt_plan: Sequence[_GroundNSRT],
     goal: Set[GroundAtom],
     rng: np.random.Generator,
-    necessary_atoms_seq: Optional[Sequence[Set[GroundAtom]]] = None
+    necessary_atoms_seq: Optional[Sequence[Set[GroundAtom]]] = None,
+    pre_next_option_hook: Optional[Callable[[_GroundNSRT, State, Set[GroundAtom]],
+                                            None]] = None,
 ) -> Callable[[State], Action]:
     """Greedily execute an NSRT plan, assuming downward refinability and that
     any sample will work.
@@ -1409,7 +1418,12 @@ def nsrt_plan_to_greedy_policy(
     OptionExecutionFailure is raised.
     """
     option_policy = nsrt_plan_to_greedy_option_policy(
-        nsrt_plan, goal, rng, necessary_atoms_seq=necessary_atoms_seq)
+        nsrt_plan,
+        goal,
+        rng,
+        necessary_atoms_seq=necessary_atoms_seq,
+        pre_next_option_hook=pre_next_option_hook,
+    )
     return option_policy_to_policy(option_policy)
 
 

@@ -861,9 +861,17 @@ def run_testing(env, cogman):
         except (ApproachTimeout, ApproachFailure) as e:
             error_msg = str(e.args[0]) if e.args else ""
             
-            # Check if this is an NSRT plan exhausted error and attempt replanning
-            if isinstance(e, ApproachFailure) and ("NSRT plan exhausted" in error_msg or "plan exhausted" in error_msg):
-                logging.info(f"[Replan] NSRT plan exhausted detected. Attempting hot replanning...")
+            # Recoverable execution failures: replan from current state.
+            if isinstance(e, ApproachFailure) and (
+                "NSRT plan exhausted" in error_msg
+                or "plan exhausted" in error_msg
+                or "failed to achieve the necessary atoms" in error_msg
+                or "Observe extra discovery" in error_msg
+            ):
+                logging.info(
+                    "[Replan] Recoverable failure (plan exhausted or necessary-atoms "
+                    "mismatch). Attempting hot replanning..."
+                )
                 
                 try:
                     # Capture current view and sample before replanning

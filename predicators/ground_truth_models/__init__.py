@@ -92,6 +92,15 @@ def get_gt_options(env_name: str) -> Set[ParameterizedOption]:
         ]
         if preferred:
             matched_factories = preferred
+    if env_name == "kitchen_v2" and len(matched_factories) > 1:
+        use_v2 = bool(getattr(CFG, "kitchen_v2_use_options_v2", False))
+        preferred_suffix = ".options_v2" if use_v2 else ".options"
+        preferred = [
+            cls for cls in matched_factories
+            if cls.__module__.endswith(preferred_suffix)
+        ]
+        if preferred:
+            matched_factories = preferred
     for cls in matched_factories:
         factory = cls()
         types = {t.name: t for t in env.types}

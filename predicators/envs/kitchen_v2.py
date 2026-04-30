@@ -24,13 +24,14 @@ except (ImportError, RuntimeError):
 from predicators import utils
 from predicators.envs import BaseEnv
 from predicators.settings import CFG
-from predicators.structs import Action, EnvironmentTask, Image, Object, \
-    Observation, Predicate, State, Type, Video
+from predicators.structs import Action, EnvironmentTask, GroundAtom, Image, \
+    Object, Observation, Predicate, State, Type, Video
 
 _TRACKED_SITES = [
     "hinge_site1", "hinge_site2", "kettle_site", "microhandle_site",
     "knob1_site", "knob2_site", "knob3_site", "knob4_site", "light_site",
     "slide_site", "mug_site", "milk_site", "sponge_site", "tea_site",
+    "left_fingertip_site", "right_fingertip_site",
     "keycard_site", "EEF"
 ]
 
@@ -127,6 +128,10 @@ class KitchenV2Env(BaseEnv):
     _grasped_object_relative_pose: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
     # Instance-level dictionary to store body IDs for grasped objects (for applying forces)
     _grasped_object_body_ids: Dict[str, int] = {}
+    # Cache original geom collision masks before disabling while grasped.
+    _original_geom_collision_masks: Dict[int, Tuple[int, int]] = {}
+    # Track which geoms were disabled per object.
+    _disabled_object_geom_ids: Dict[str, List[int]] = {}
     # Store original gravity to restore later
     _original_gravity: Optional[np.ndarray] = None
 
@@ -181,9 +186,6 @@ class KitchenV2Env(BaseEnv):
     }
 
     obj_name_to_pre_pick_dpos = {
-        # ("banana", "hinge2"): (0.0, -0.05, 0.05),
-        # ("banana", "slide"): (0.0, 0.05, 0.0),
-        # ("banana", "microhandle"): (0.0, -0.05, 0.05),
         ("mug", "hinge2"): (0.0, -0.1, 0.2),
         ("mug", "slide"): (0.0, -0.1, 0.2),
         ("mug", "microhandle"): (0.0, -0.1, 0.1),
@@ -205,6 +207,30 @@ class KitchenV2Env(BaseEnv):
         ("keycard", "microhandle"): (0.0, -0.1, 0.1),
         ("keycard", "countertop"): (0.0, 0.0, 0.1),
         ("keycard", "keycard_table"): (0.0, 0.0, 0.08),
+    }
+
+    obj_name_to_pick_dpos = {
+        ("mug", "hinge2"): (0.0, 0.0, 0.05),
+        ("mug", "slide"): (0.0, 0.0, 0.05),
+        ("mug", "microhandle"): (0.0, 0.0, 0.05),
+        ("mug", "countertop"): (0.0, 0.0, 0.05),
+        ("sponge", "hinge2"): (0.0, 0.0, 0.025),
+        ("sponge", "slide"): (0.0, 0.0, 0.025),
+        ("sponge", "microhandle"): (0.0, 0.0, 0.025),
+        ("sponge", "countertop"): (0.0, 0.0, 0.025),
+        ("tea", "hinge2"): (0.0, 0.0, 0.025),
+        ("tea", "slide"): (0.0, 0.0, 0.025),
+        ("tea", "microhandle"): (0.0, 0.0, 0.025),
+        ("tea", "countertop"): (0.0, 0.0, 0.025),
+        ("milk", "hinge2"): (0.0, 0.0, 0.025),
+        ("milk", "slide"): (0.0, 0.0, 0.025),
+        ("milk", "microhandle"): (0.0, 0.0, 0.025),
+        ("milk", "countertop"): (0.0, 0.0, 0.025),
+        ("keycard", "hinge2"): (0.0, 0.0, 0.0),
+        ("keycard", "slide"): (0.0, 0.0, 0.0),
+        ("keycard", "microhandle"): (0.0, 0.0, 0.0),
+        ("keycard", "countertop"): (0.0, 0.0, 0.0),
+        ("keycard", "keycard_table"): (0.0, 0.0, 0.0),
     }
 
     obj_name_to_xyz = {
@@ -251,6 +277,8 @@ README of that repo suggests!"
         
         # Initialize instance-level dictionary for body IDs
         self._grasped_object_body_ids: Dict[str, int] = {}
+        self._original_geom_collision_masks: Dict[int, Tuple[int, int]] = {}
+        self._disabled_object_geom_ids: Dict[str, List[int]] = {}
         # Store original gravity to restore later
         self._original_gravity: Optional[np.ndarray] = None
                 
@@ -298,6 +326,12 @@ README of that repo suggests!"
             except (KeyError, AttributeError):
                 # If joint name doesn't exist, try alternative names
                 pass
+        # Track pinch center in world frame as average of left/right fingertip sites.
+        if ("left_fingertip_site" in state_info and
+                "right_fingertip_site" in state_info):
+            left_tip = state_info["left_fingertip_site"]
+            right_tip = state_info["right_fingertip_site"]
+            state_info["gripper_center_site"] = 0.5 * (left_tip + right_tip)
 
         # Add new objects to state info
         # self._add_new_objects_to_state_info(state_info, mujoco_model, mujoco_data)
@@ -568,6 +602,8 @@ README of that repo suggests!"
         """Resets the current state to the train or test task initial state."""
         self._clear_shared_kitchen_belief_state()
         self._grasped_object_body_ids.clear()
+        self._original_geom_collision_masks.clear()
+        self._disabled_object_geom_ids.clear()
         KitchenV2Env._current_env = self
         # Restore gravity if it was modified
         if self._original_gravity is not None:
@@ -639,6 +675,7 @@ README of that repo suggests!"
         """
         model = self._gym_env.model
         data = self._gym_env.data
+        self._sync_grasped_object_collisions()
         
         # Store original gravity if not already stored
         if self._original_gravity is None:
@@ -694,6 +731,65 @@ README of that repo suggests!"
                 self._set_object_velocity_zero(obj_name)
             except Exception as e:
                 print(f"Warning: Failed to pre-update grasped object {obj_name} position: {e}")
+
+    def _sync_grasped_object_collisions(self) -> None:
+        """Disable collisions for grasped objects and restore on release."""
+        model = self._gym_env.model
+        grasped_now = {
+            obj_name for obj_name in self._GRASPABLE_OBJECTS
+            if self._grippable_object_grasped_status.get(obj_name, False)
+        }
+
+        # Restore collisions for objects that are no longer grasped.
+        for obj_name in list(self._disabled_object_geom_ids):
+            if obj_name in grasped_now:
+                continue
+            for geom_id in self._disabled_object_geom_ids[obj_name]:
+                if geom_id in self._original_geom_collision_masks:
+                    contype, conaffinity = self._original_geom_collision_masks[geom_id]
+                    model.geom_contype[geom_id] = contype
+                    model.geom_conaffinity[geom_id] = conaffinity
+                    del self._original_geom_collision_masks[geom_id]
+            del self._disabled_object_geom_ids[obj_name]
+
+        # Disable collisions for newly grasped objects.
+        for obj_name in grasped_now:
+            if obj_name in self._disabled_object_geom_ids:
+                continue
+            try:
+                body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                                            obj_name)
+            except Exception:
+                continue
+
+            disabled_geom_ids: List[int] = []
+            for geom_id in range(model.ngeom):
+                geom_body_id = int(model.geom_bodyid[geom_id])
+                if not self._body_is_descendant(geom_body_id, body_id, model):
+                    continue
+                if geom_id not in self._original_geom_collision_masks:
+                    self._original_geom_collision_masks[geom_id] = (
+                        int(model.geom_contype[geom_id]),
+                        int(model.geom_conaffinity[geom_id]),
+                    )
+                model.geom_contype[geom_id] = 0
+                model.geom_conaffinity[geom_id] = 0
+                disabled_geom_ids.append(geom_id)
+            if disabled_geom_ids:
+                self._disabled_object_geom_ids[obj_name] = disabled_geom_ids
+
+    @staticmethod
+    def _body_is_descendant(body_id: int, ancestor_body_id: int, model: Any) -> bool:
+        """Return whether body_id is ancestor_body_id or a descendant of it."""
+        current = body_id
+        while current >= 0:
+            if current == ancestor_body_id:
+                return True
+            parent = int(model.body_parentid[current])
+            if parent == current:
+                break
+            current = parent
+        return False
     
     def _update_grasped_objects(self) -> None:
         """Update positions of grasped objects to follow gripper after step().
@@ -807,6 +903,11 @@ README of that repo suggests!"
                     "finger1_pos": finger1_value,
                     "finger2_pos": finger2_value,
                 }
+            elif key in {"left_fingertip_site", "right_fingertip_site",
+                         "gripper_center_site"}:
+                # Auxiliary fingertip sites are only used to compute
+                # gripper_center_site and should not become symbolic objects.
+                continue
             elif key in _TRACKED_SITE_TO_JOINT.values():
                 continue  # used below
             elif "finger" in key.lower() and "joint" in key.lower():
@@ -885,7 +986,15 @@ README of that repo suggests!"
             }
         
         state = utils.create_state_from_dict(state_dict)
-        state.simulator_state = {}
+        # Keep gripper center purely in simulator_state to avoid polluting
+        # symbolic object/type spaces used by NSRT grounding.
+        simulator_state: Dict[str, Any] = {}
+        if "gripper_center_site" in state_info:
+            center = state_info["gripper_center_site"]
+            simulator_state["gripper_center_xyz"] = np.array(
+                [float(center[0]), float(center[1]), float(center[2])],
+                dtype=np.float32)
+        state.simulator_state = simulator_state
         return state
 
     @classmethod
@@ -1140,6 +1249,8 @@ README of that repo suggests!"
         # do not read stale class-level belief state.
         self._clear_shared_kitchen_belief_state()
         self._grasped_object_body_ids.clear()
+        self._original_geom_collision_masks.clear()
+        self._disabled_object_geom_ids.clear()
         self._gym_env.reset(seed=seed)
         print("RESET START")
         kettle_x_coord = -0.269
@@ -1824,6 +1935,18 @@ README of that repo suggests!"
         return (dx, dy, dz)
 
     @classmethod
+    def get_pick_delta_pos(cls, objects: Sequence[Object]) -> Tuple[float, float, float]:
+        """Get dx, dy, dz offset for picking."""
+        obj, container = objects
+        try:
+            if container is None or not hasattr(container, 'name'):
+                return (0.0, 0.0, 0.0)
+            dx, dy, dz = cls.obj_name_to_pick_dpos[(obj.name, container.name)]
+        except KeyError:
+            dx, dy, dz = (0.0, 0.0, 0.0)
+        return (dx, dy, dz)
+
+    @classmethod
     def _AtPrePickUp_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if gripper is in pre-pick up position."""
         gripper, object, obj_place = objects
@@ -1871,4 +1994,67 @@ README of that repo suggests!"
     def _GripperFree_holds(cls, state: State, objects: Sequence[Object]) -> bool:
         """Check if gripper is free (not holding any object)."""
         return not any(cls._grippable_object_grasped_status.values())
+
+
+def kitchen_maybe_replan_extra_observe_discovery(
+    completed_nsrt: Any,
+    state: State,
+    goal: Set[GroundAtom],
+) -> None:
+    """Raise OptionExecutionFailure if an observe just revealed more searchable
+    task-relevant objects than that ground ObserveContainer* NSRT promised.
+
+    Triggers hot replan so the planner can drop redundant observes (e.g. open
+    slide for mug when mug was already seen inside microhandle).
+    """
+    from predicators.structs import _GroundNSRT
+    from predicators.utils import OptionExecutionFailure
+
+    if not isinstance(completed_nsrt, _GroundNSRT):
+        return
+    name = completed_nsrt.name
+    if not name.startswith("ObserveContainer"):
+        return
+
+    container: Optional[Object] = None
+    for atom in completed_nsrt.add_effects:
+        if atom.predicate.name == "ObjectFound" and len(atom.objects) >= 2:
+            container = atom.objects[1]
+            break
+    if container is None:
+        for atom in completed_nsrt.add_effects:
+            if atom.predicate.name == "Observed" and atom.objects:
+                container = atom.objects[0]
+                break
+    if container is None:
+        return
+
+    promised = {
+        atom for atom in completed_nsrt.add_effects
+        if atom.predicate.name == "ObjectFound"
+    }
+    if not promised:
+        return
+    objf_pred = next(iter(promised)).predicate
+
+    searchable_names = set(KitchenV2Env._SEARCHABLE_OBJECTS)
+    task_objs: Set[Object] = set()
+    for atom in goal:
+        for obj in atom.objects:
+            oname = getattr(obj, "name", "")
+            if oname in searchable_names:
+                task_objs.add(obj)
+    if not task_objs:
+        return
+
+    extras: List[str] = []
+    for obj in task_objs:
+        ga = GroundAtom(objf_pred, [obj, container])
+        if ga not in promised and ga.holds(state):
+            extras.append(str(ga))
+    if extras:
+        raise OptionExecutionFailure(
+            "Observe extra discovery: replan needed (found more task-relevant "
+            "objects than this ObserveContainer NSRT assumed). "
+            f"extras={extras}")
 

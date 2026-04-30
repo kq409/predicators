@@ -348,10 +348,14 @@ def run_testing(env, cogman):
 
             # Hot replanning logic (copied from predicators_explorer_mujoco.py)
             if isinstance(e, ApproachFailure) and (
-                "NSRT plan exhausted" in error_msg or "plan exhausted" in error_msg
+                "NSRT plan exhausted" in error_msg
+                or "plan exhausted" in error_msg
+                or "failed to achieve the necessary atoms" in error_msg
+                or "Observe extra discovery" in error_msg
             ):
                 logging.info(
-                    "[Replan] NSRT plan exhausted detected. Attempting hot replanning..."
+                    "[Replan] Recoverable failure (plan exhausted or necessary-atoms "
+                    "mismatch). Attempting hot replanning..."
                 )
 
                 try:

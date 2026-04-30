@@ -19,6 +19,31 @@ from predicators.settings import CFG
 from predicators.structs import NSRT, Action, GroundAtom, Metrics, \
     ParameterizedOption, Predicate, State, Task, Type, _GroundNSRT, _Option
 
+_OBSERVE_NSRT_PREFIX = "ObserveContainer"
+
+
+def _sparse_object_found_necessary_atoms_after_observe(
+        nsrt_plan: List[_GroundNSRT],
+) -> List[Set[GroundAtom]]:
+    """ObjectFound checks only before the NSRT following ObserveContainer*.
+
+    Atoms come from that observe NSRT's add_effects (what planning assumed was
+    found). Using compute_necessary_atoms_seq can add extra ObjectFound atoms
+    needed later in the plan, which is too strict immediately after observe.
+    """
+    n = len(nsrt_plan)
+    sparse: List[Set[GroundAtom]] = []
+    for k in range(n + 1):
+        if k > 0 and nsrt_plan[k - 1].name.startswith(_OBSERVE_NSRT_PREFIX):
+            prev = nsrt_plan[k - 1]
+            sparse.append({
+                a for a in prev.add_effects
+                if a.predicate.name == "ObjectFound"
+            })
+        else:
+            sparse.append(set())
+    return sparse
+
 
 class BilevelPlanningApproach(BaseApproach):
     """Bilevel planning approach."""
@@ -66,8 +91,35 @@ class BilevelPlanningApproach(BaseApproach):
                 task, nsrts, preds, timeout, seed)
             self._last_nsrt_plan = nsrt_plan
             self._last_atoms_seq = atoms_seq
-            policy = utils.nsrt_plan_to_greedy_policy(nsrt_plan, task.goal,
-                                                      self._rng)
+            necessary_atoms_seq = None
+            if CFG.sesame_use_necessary_atoms:
+                necessary_atoms_seq = (
+                    _sparse_object_found_necessary_atoms_after_observe(
+                        nsrt_plan))
+            pre_next_hook = None
+            if (CFG.env == "kitchen_v2" and getattr(
+                    CFG, "kitchen_replan_on_extra_observe_discovery", True)):
+
+                def _pre_next_observe_hook(
+                        completed: _GroundNSRT,
+                        st: State,
+                        g: Set[GroundAtom],
+                ) -> None:
+                    from predicators.envs.kitchen_v2 import (
+                        kitchen_maybe_replan_extra_observe_discovery,
+                    )
+
+                    kitchen_maybe_replan_extra_observe_discovery(completed, st,
+                                                                 g)
+
+                pre_next_hook = _pre_next_observe_hook
+            policy = utils.nsrt_plan_to_greedy_policy(
+                nsrt_plan,
+                task.goal,
+                self._rng,
+                necessary_atoms_seq=necessary_atoms_seq,
+                pre_next_option_hook=pre_next_hook,
+            )
             logging.debug("Current Task Plan:")
             for act in nsrt_plan:
                 logging.debug(act)

@@ -344,6 +344,8 @@ class GlobalSettings:
     kitchen_render_set_of_marks = False
     kitchen_use_combo_move_nsrts = False
     kitchen_randomize_init_state = False
+    # If True, prefer ground_truth_models.kitchen_v2.options_v2 over options.
+    kitchen_v2_use_options_v2 = False
 
     # sticky table env parameters
     sticky_table_num_tables = 5
@@ -466,11 +468,15 @@ class GlobalSettings:
     sesame_static_object_change_tol = 1e-3
     # If True, then bilevel planning approaches will run task planning only,
     # and then greedily sample and execute in the environment. This avoids the
-    # need for a simulator. In the future, we could check to see if the
-    # observed states match (at the abstract level) the expected states, and
-    # replan if not. But for now, we just execute each step without checking.
+    # need for a simulator. When sesame_use_necessary_atoms is True, execution
+    # uses a sparse necessary-atoms sequence: only ObjectFound atoms from each
+    # ObserveContainer* NSRT's add_effects are checked on the following step.
     # bilevel_plan_without_sim = False
     bilevel_plan_without_sim = True #Changed for kitchen env.
+    # kitchen_v2: after ObserveContainer*, replan if reality found more searchable
+    # goal-relevant objects than that NSRT's add_effects claimed (avoids redundant
+    # observes elsewhere).
+    kitchen_replan_on_extra_observe_discovery = True
 
     # evaluation parameters
     log_dir = "logs"
