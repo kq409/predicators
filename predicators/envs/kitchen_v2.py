@@ -189,20 +189,20 @@ class KitchenV2Env(BaseEnv):
         ("mug", "hinge2"): (0.0, -0.1, 0.2),
         ("mug", "slide"): (0.0, -0.1, 0.2),
         ("mug", "microhandle"): (0.0, -0.1, 0.1),
-        ("mug", "countertop"): (0.0, 0.0, 0.22),
+        ("mug", "countertop"): (0.0, 0.0, 0.15),
         ("sponge", "hinge2"): (0.0, -0.1, 0.1),
         ("sponge", "slide"): (0.0, -0.1, 0.1),
         ("sponge", "microhandle"): (0.0, -0.1, 0.1),
-        ("sponge", "countertop"): (-0.1, 0.1, 0.22),
+        ("sponge", "countertop"): (-0.1, 0.1, 0.15),
         ("tea", "hinge2"): (0.0, -0.10, 0.15),
         ("tea", "slide"): (0.0, -0.10, 0.15),
         ("tea", "microhandle"): (0.0, -0.1, 0.1),
-        ("tea", "countertop"): (0.0, 0.15, 0.2),
+        ("tea", "countertop"): (0.0, 0.15, 0.13),
         ("milk", "hinge2"): (0.0, -0.13, 0.15),
         ("milk", "slide"): (0.0, -0.13, 0.1),
         ("milk", "microhandle"): (0.0, -0.1, 0.1),
-        ("milk", "countertop"): (-0.1, -0.1, 0.22),
-        ("keycard", "hinge2"): (0.0, -0.2, 0.05),
+        ("milk", "countertop"): (-0.1, -0.1, 0.15),
+        ("keycard", "hinge2"): (0.0, -0.175, 0.05),
         ("keycard", "slide"): (0.0, -0.1, 0.1),
         ("keycard", "microhandle"): (0.0, -0.1, 0.1),
         ("keycard", "countertop"): (0.0, 0.0, 0.1),
@@ -240,7 +240,7 @@ class KitchenV2Env(BaseEnv):
         "slide": np.array([0.15, 0.507, 2.6]),
         # "microhandle": np.array([-0.64187852, 0.49210206, 1.792]),
         "microhandle": np.array([-0.3187852, 0.74210206, 1.792]),
-        "countertop": np.array([0.3, 0.35, 1.6]),
+        "countertop": np.array([0.35, 0.35, 1.6]),
         "keycard_table": np.array([-0.7, -0.2, 1.626]),
     }
 
@@ -261,6 +261,13 @@ README of that repo suggests!"
         self._gym_env = mujoco_kitchen_gym.make("FrankaKitchenV2-v1",
                                                 render_mode=render_mode,
                                                 ik_controller=True)
+        # Sync grasped objects during each internal robot physics sub-step to
+        # avoid visible lag from only updating once per high-level env step.
+        robot_env = getattr(self._gym_env, "robot_env", None)
+        if robot_env is not None and hasattr(robot_env,
+                                             "post_physics_step_callback"):
+            robot_env.post_physics_step_callback = (
+                self._on_robot_post_physics_step)
 
         # Initialize all container observed status to False
         for container_name in _CONTAINER_SITE_TO_NAME.values():
@@ -654,6 +661,17 @@ README of that repo suggests!"
             "obs_images": self.render()
         }
         return self._copy_observation(self._current_observation)
+
+    def _on_robot_post_physics_step(self) -> None:
+        """Sub-step callback to keep grasped objects tightly synchronized."""
+        use_magic_options = bool(getattr(CFG, "kitchen_use_magic_options",
+                                         False))
+        if use_magic_options:
+            return
+        if not self._grasped_object_relative_pose:
+            return
+        self._sync_grasped_object_collisions()
+        self._update_grasped_objects()
 
     def _maybe_unlock_hinge2_with_keycard(self) -> None:
         """Unlock hinge2 if keycard is grasped and swiped near hinge2."""

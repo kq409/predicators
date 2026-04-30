@@ -113,11 +113,12 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                 elif obj.is_instance(hinge_door_type):
                     target_quat = angled_quat
             else:
-                init_quat = down_quat
+                init_quat = angled_quat
                 target_quat = down_quat
             # Change the waypoints to the target position
             memory["waypoints"] = [
-                (cls.home_pos, init_quat),
+                # (cls.home_pos, init_quat),
+                ((home_x, home_y + 0.1, home_z), target_quat),
                 (target_pose, target_quat),
             ]
             if obj.name == "hinge2":
@@ -1123,6 +1124,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             elif obj_place.name == "keycard_table":
                 target_quat = angled_quat
                 memory["waypoints"] = [
+                    ((gx, gy - 0.1, gz), current_quat),
                     ((gx, gy - 0.1, gz + 0.1), current_quat),
                     (cls.home_pos, angled_quat),
                     ((ox + dx + 0.1, oy + dy + 0.3, oz + dz + 0.45), angled_quat),
@@ -1419,6 +1421,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                 memory["waypoints"] = [
                     ((gx, gy, gz + 0.1), current_quat),
                     ((gx, gy + 0.2, gz + 0.4), current_quat),
+                    ((gx, gy + 0.25, gz + 0.45), current_quat),
                     (cls.home_pos, angled_quat),
                     # ((ox + dx, oy + dy + 0.3, oz + dz + 0.45), angled_quat),
                     # ((ox + dx, oy + dy + 0.2, oz + dz + 0.3), angled_quat),
