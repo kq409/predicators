@@ -97,7 +97,7 @@ class BilevelPlanningApproach(BaseApproach):
                     _sparse_object_found_necessary_atoms_after_observe(
                         nsrt_plan))
             pre_next_hook = None
-            if (CFG.env == "kitchen_v2" and getattr(
+            if (CFG.env in {"kitchen_v2", "kitchen_v3"} and getattr(
                     CFG, "kitchen_replan_on_extra_observe_discovery", True)):
 
                 def _pre_next_observe_hook(
@@ -105,9 +105,14 @@ class BilevelPlanningApproach(BaseApproach):
                         st: State,
                         g: Set[GroundAtom],
                 ) -> None:
-                    from predicators.envs.kitchen_v2 import (
-                        kitchen_maybe_replan_extra_observe_discovery,
-                    )
+                    if CFG.env == "kitchen_v3":
+                        from predicators.envs.kitchen_v3 import (
+                            kitchen_maybe_replan_extra_observe_discovery,
+                        )
+                    else:
+                        from predicators.envs.kitchen_v2 import (
+                            kitchen_maybe_replan_extra_observe_discovery,
+                        )
 
                     kitchen_maybe_replan_extra_observe_discovery(completed, st,
                                                                  g)

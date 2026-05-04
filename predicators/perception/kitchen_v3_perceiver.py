@@ -1,45 +1,42 @@
-"""A Kitchen v2-specific perceiver."""
+"""A Kitchen v3-specific perceiver."""
 
-from predicators.envs.kitchen_v2 import KitchenV2Env
+from predicators.envs.kitchen_v3 import KitchenV3Env
 from predicators.perception.base_perceiver import BasePerceiver
 from predicators.structs import EnvironmentTask, GroundAtom, Observation, \
     State, Task, Video
 
 
-class KitchenV2Perceiver(BasePerceiver):
-    """A Kitchen v2-specific perceiver."""
+class KitchenV3Perceiver(BasePerceiver):
+    """A Kitchen v3-specific perceiver."""
 
     @classmethod
     def get_name(cls) -> str:
-        return "kitchen_v2"
+        return "kitchen_v3"
 
     def reset(self, env_task: EnvironmentTask) -> Task:
         state = self._observation_to_state(env_task.init_obs)
-        pred_name_to_pred = KitchenV2Env.create_predicates()
+        pred_name_to_pred = KitchenV3Env.create_predicates()
         OnTop = pred_name_to_pred["OnTop"]
         TurnedOn = pred_name_to_pred["TurnedOn"]
         KettleBoiling = pred_name_to_pred["KettleBoiling"]
-        kettle = KitchenV2Env.object_name_to_object("kettle")
-        knob4 = KitchenV2Env.object_name_to_object("knob4")
-        knob3 = KitchenV2Env.object_name_to_object("knob3")
-        burner4 = KitchenV2Env.object_name_to_object("burner4")
-        burner3 = KitchenV2Env.object_name_to_object("burner3")
-        burner2 = KitchenV2Env.object_name_to_object("burner2")
-        light = KitchenV2Env.object_name_to_object("light")
-        # banana = KitchenV2Env.object_name_to_object("banana")
+        kettle = KitchenV3Env.object_name_to_object("kettle")
+        knob4 = KitchenV3Env.object_name_to_object("knob4")
+        knob3 = KitchenV3Env.object_name_to_object("knob3")
+        burner4 = KitchenV3Env.object_name_to_object("burner4")
+        burner3 = KitchenV3Env.object_name_to_object("burner3")
+        burner2 = KitchenV3Env.object_name_to_object("burner2")
+        light = KitchenV3Env.object_name_to_object("light")
+        # banana = KitchenV3Env.object_name_to_object("banana")
         # BananaFound = pred_name_to_pred["BananaFound"]
         # BananaOnTop = pred_name_to_pred["BananaOnTop"]
         MugOnCountertop = pred_name_to_pred["MugOnCountertop"]
-        SpongeOnCountertop = pred_name_to_pred["SpongeOnCountertop"]
         TeaOnCountertop = pred_name_to_pred["TeaOnCountertop"]
-        MugWashed = pred_name_to_pred["MugWashed"]
-        # TeaMade = pred_name_to_pred["TeaMade"]
+        TeaPoured = pred_name_to_pred["TeaPoured"]
         MilkTeaMade = pred_name_to_pred["MilkTeaMade"]
-        mug = KitchenV2Env.object_name_to_object("mug")
-        sponge = KitchenV2Env.object_name_to_object("sponge")
-        tea = KitchenV2Env.object_name_to_object("tea")
-        countertop = KitchenV2Env.object_name_to_object("countertop")
-        milk = KitchenV2Env.object_name_to_object("milk")
+        mug = KitchenV3Env.object_name_to_object("mug")
+        tea = KitchenV3Env.object_name_to_object("tea")
+        countertop = KitchenV3Env.object_name_to_object("countertop")
+        milk = KitchenV3Env.object_name_to_object("milk")
         goal_desc = env_task.goal_description
         if goal_desc == (
                 "Move the kettle to the back left burner and turn it on; "
@@ -86,14 +83,12 @@ class KitchenV2Perceiver(BasePerceiver):
                 GroundAtom(TeaOnCountertop, [tea, countertop]),
                 GroundAtom(MugOnCountertop, [mug, countertop])
             }
-        elif goal_desc == "CleanMug" or goal_desc == "Clean the mug":
+        elif goal_desc == "Make a cup of tea":
             goal = {
-                GroundAtom(MugWashed, [sponge, countertop])
+                GroundAtom(TeaPoured, [tea]),
+                GroundAtom(TeaOnCountertop, [tea, countertop]),
+                GroundAtom(MugOnCountertop, [mug, countertop]),
             }
-        # elif goal_desc == "Make a cup of tea":
-        #     goal = {
-        #         GroundAtom(TeaMade, [tea])
-        #     }
         elif goal_desc == "Make a cup of milk tea":
             goal = {
                 GroundAtom(MilkTeaMade, [milk, tea, countertop])
@@ -106,11 +101,12 @@ class KitchenV2Perceiver(BasePerceiver):
         return self._observation_to_state(observation)
 
     def _observation_to_state(self, obs: Observation) -> State:
-        state = KitchenV2Env.state_info_to_state(obs["state_info"])
+        state = KitchenV3Env.state_info_to_state(obs["state_info"])
         assert state.simulator_state is not None
         state.simulator_state["images"] = obs["obs_images"]
         return state
 
     def render_mental_images(self, observation: Observation,
                              env_task: EnvironmentTask) -> Video:
-        raise NotImplementedError("Mental images not implemented for kitchen_v2")
+        raise NotImplementedError("Mental images not implemented for kitchen_v3")
+

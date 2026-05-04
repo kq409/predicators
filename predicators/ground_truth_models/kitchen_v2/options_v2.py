@@ -1515,6 +1515,14 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
 
             return True
 
+        def _MakeTea_terminal(state: State, memory: Dict,
+                              objects: Sequence[Object], params: Array) -> bool:
+            done = _Place_terminal(state, memory, objects, params)
+            if done:
+                tea_obj = objects[1]
+                KitchenV2Env.set_tea_made(tea_obj.name, True)
+            return done
+
         Place = ParameterizedOption(
             "Place",
             types=[gripper_type, grippable_object_type, object_type],
@@ -1539,7 +1547,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             params_space=Box(-5, 5, (3, )),
             policy=_Place_policy,
             initiable=lambda _1, _2, _3, _4: True,
-            terminal=_Place_terminal)
+            terminal=_MakeTea_terminal)
         options.add(MakeTea)
 
         PlaceTeaOnTable = ParameterizedOption(

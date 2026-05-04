@@ -346,6 +346,8 @@ class GlobalSettings:
     kitchen_randomize_init_state = False
     # If True, prefer ground_truth_models.kitchen_v2.options_v2 over options.
     kitchen_v2_use_options_v2 = False
+    # If True, prefer ground_truth_models.kitchen_v3.options_v2 over options.
+    kitchen_v3_use_options_v2 = False
 
     # sticky table env parameters
     sticky_table_num_tables = 5
@@ -753,6 +755,7 @@ class GlobalSettings:
                 "sokoban": "sokoban",
                 "kitchen": "kitchen",
                 "kitchen_v2": "kitchen_v2",
+                "kitchen_v3": "kitchen_v3",
             })[args.get("env", "")],
             # Horizon for each environment. When checking if a policy solves a
             # task, we run the policy for at most this many steps.
@@ -767,6 +770,7 @@ class GlobalSettings:
                     "coffee": 1000,
                     "kitchen": 1000,
                     "kitchen_v2": 1000,
+                    "kitchen_v3": 1000,
                     # For the very simple touch point environment, restrict
                     # the horizon to be shorter.
                     "touch_point": 15,
@@ -826,6 +830,7 @@ class GlobalSettings:
                     "stick_button": 1000,
                     "kitchen": 1000,    # TODO: Changed for kitchen env.
                     "kitchen_v2": 1000,
+                    "kitchen_v3": 1000,
                     "stick_button_move": 1000
                 })[args.get("env", "")],
 

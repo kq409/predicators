@@ -5,7 +5,7 @@ from typing import ClassVar, Dict, Sequence, Set
 import numpy as np
 from gym.spaces import Box
 
-from predicators.envs.kitchen_v2 import KitchenV2Env
+from predicators.envs.kitchen_v3 import KitchenV3Env
 from predicators.ground_truth_models import GroundTruthOptionFactory
 from predicators.pybullet_helpers.geometry import Pose3D
 from predicators.structs import Action, Array, GroundAtom, Object, \
@@ -23,7 +23,7 @@ except (ImportError, RuntimeError):
     _MJKITCHEN_IMPORTED = False
 
 
-class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
+class KitchenV3GroundTruthOptionFactory(GroundTruthOptionFactory):
     """Ground-truth options for the Kitchen environment."""
 
     moveto_tol: ClassVar[float] = 0.01  # for terminating moving
@@ -39,9 +39,48 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
     turn_knob_tol: ClassVar[float] = 0.02  # for twisting the knob
     gripper_closed_threshold: ClassVar[float] = 0.03  # threshold for gripper closed
 
+    move_carry_finger_target_by_obj: ClassVar[Dict[str, float]] = {
+        "mug": 0.10,
+        "tea": 0.045,
+        "milk": 0.045,
+        "keycard": 0.028,
+    }
+    move_carry_finger_target_default: ClassVar[float] = 0.06
+    move_carry_finger_band: ClassVar[float] = 0.012
+    move_carry_grip_gain: ClassVar[float] = 15.0
+
+    @classmethod
+    def _move_carry_grip_command(
+            cls, state: State, gripper: Object, carried: Object) -> float:
+        name = carried.name
+        if not KitchenV3Env._grippable_object_grasped_status.get(name, False):
+            return 1.0
+        f1 = float(state.get(gripper, "finger1_pos"))
+        f2 = float(state.get(gripper, "finger2_pos"))
+        print(f"f1: {f1}, f2: {f2}")
+        print(f"avg_f: {avg_f}")
+        print(f"target: {target}")
+        print(f"err: {err}")
+        print(f"b: {b}")
+        print(f"kg: {kg}")
+        print(f"clip: {np.clip(kg * err, 0.0, 1.0)}")
+        print(f"clip: {np.clip(kg * err, -1.0, 0.0)}")
+        print(f"return: {0.0}")
+        avg_f = 0.5 * (f1 + f2)
+        target = cls.move_carry_finger_target_by_obj.get(
+            name, cls.move_carry_finger_target_default)
+        err = avg_f - target
+        b = cls.move_carry_finger_band
+        kg = cls.move_carry_grip_gain
+        if err > b:
+            return float(np.clip(kg * err, 0.0, 1.0))
+        if err < -b:
+            return float(np.clip(kg * err, -1.0, 0.0))
+        return 0.0
+
     @classmethod
     def get_env_names(cls) -> Set[str]:
-        return {"kitchen_v2"}
+        return {"kitchen_v3"}
 
     @classmethod
     def get_options(cls, env_name: str, types: Dict[str, Type],
@@ -73,7 +112,6 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
         site_type = types["site"]
         # banana_type = types["banana"]
         mug_type = types["mug"]
-        sponge_type = types["sponge"]
         tea_type = types["tea"]
         grippable_object_type = types["grippable_object"]
         object_type = types["object"]
@@ -122,7 +160,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             ]
             if obj.name == "hinge2":
                 target_quat = prepullhinge_quat
-                env = getattr(KitchenV2Env, "_current_env", None)
+                env = getattr(KitchenV3Env, "_current_env", None)
                 if (np.allclose(current_pose, env.obj_name_to_xyz["keycard_table"], atol=0.3)):
                     memory["waypoints"] = [
                         ((gx, gy, gz + 0.1), current_quat),
@@ -185,14 +223,19 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             ox = state.get(obj, "x")
             oy = state.get(obj, "y")
             oz = state.get(obj, "z")
+
+            def _reference_xyz(ob: Object):
+                """Static sites use obj_name_to_xyz; grippables (mug, tea, …) use sim state."""
+                ref = KitchenV3Env.obj_name_to_xyz.get(ob.name)
+                if ref is not None:
+                    return (float(ref[0]), float(ref[1]), float(ref[2]))
+                return (float(state.get(ob, "x")), float(state.get(ob, "y")),
+                        float(state.get(ob, "z")))
+
             if origin is not None:
-                origin_x = KitchenV2Env.obj_name_to_xyz[origin.name][0]
-                origin_y = KitchenV2Env.obj_name_to_xyz[origin.name][1]
-                origin_z = KitchenV2Env.obj_name_to_xyz[origin.name][2]
+                origin_x, origin_y, origin_z = _reference_xyz(origin)
             if destination is not None:
-                destination_x = KitchenV2Env.obj_name_to_xyz[destination.name][0]
-                destination_y = KitchenV2Env.obj_name_to_xyz[destination.name][1]
-                destination_z = KitchenV2Env.obj_name_to_xyz[destination.name][2]
+                destination_x, destination_y, destination_z = _reference_xyz(destination)
 
             current_euler = quat2euler([gqw, gqx, gqy, gqz])
             way_pos, way_quat = memory["waypoints"][0]
@@ -223,12 +266,22 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             if len(objects) == 2:
                 grip = 0.0
             elif len(objects) == 3:
-                grip = 1.0
+                grip = cls._move_carry_grip_command(state, gripper, obj)
+            elif len(objects) == 4:
+                grip = cls._move_carry_grip_command(state, gripper, obj)
             else:
                 grip = 0.0
 
             if len(objects) == 3:
                 # For len(objects) == 3, normalize the motion part separately
+                motion_arr = np.array([dx, dy, dz, droll, dpitch, dyaw],
+                                      dtype=np.float32)
+                if np.linalg.norm(motion_arr) > cls.max_delta_mag:
+                    scale = cls.max_delta_mag / np.linalg.norm(motion_arr)
+                    motion_arr = motion_arr * scale
+                arr = np.concatenate(
+                    [motion_arr, np.array([grip], dtype=np.float32)])
+            elif len(objects) == 4:
                 motion_arr = np.array([dx, dy, dz, droll, dpitch, dyaw],
                                       dtype=np.float32)
                 if np.linalg.norm(motion_arr) > cls.max_delta_mag:
@@ -529,15 +582,15 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                 if on_or_off == "on":
                     print("gripper_x: ", gripper_x, "obj_x: ", obj_x)
                     if obj_x < -0.38:
-                        env = getattr(KitchenV2Env, "_current_env", None)
+                        env = getattr(KitchenV3Env, "_current_env", None)
                         if env is not None:
                             env.set_joint("slide_cabinet", 0.45)
-                        return KitchenV2Env.On_holds(
+                        return KitchenV3Env.On_holds(
                             state, [obj], thresh_pad=cls.push_lr_thresh_pad)
-                    return KitchenV2Env.On_holds(
+                    return KitchenV3Env.On_holds(
                         state, [obj], thresh_pad=cls.push_lr_thresh_pad)
                 assert on_or_off == "off"
-                return KitchenV2Env.Off_holds(state, [obj],
+                return KitchenV3Env.Off_holds(state, [obj],
                                             thresh_pad=cls.push_lr_thresh_pad)
 
             return _terminal
@@ -581,7 +634,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             if (gripper_x - obj_x) > 5 * cls.moveto_tol:
                 return True
             # Use a more stringent threshold to avoid numerical issues.
-            return KitchenV2Env.On_holds(state, [obj],
+            return KitchenV3Env.On_holds(state, [obj],
                                        thresh_pad=cls.turn_knob_tol)
 
         TurnOnKnob = ParameterizedOption(
@@ -601,7 +654,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             del params  # unused
             gripper, obj = objects
             memory["gripper_infront_knob"] = False
-            movement_params = np.array(KitchenV2Env.get_pre_push_delta_pos(
+            movement_params = np.array(KitchenV3Env.get_pre_push_delta_pos(
                 obj, "on"),
                                        dtype=np.float32)
             memory["movement_params"] = movement_params
@@ -628,7 +681,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             del memory, params  # unused
             _, obj = objects
             # Use a more stringent threshold to avoid numerical issues.
-            return KitchenV2Env.On_holds(state, [obj],
+            return KitchenV3Env.On_holds(state, [obj],
                                        thresh_pad=cls.turn_knob_tol)
 
         MoveAndTurnOnKnob = ParameterizedOption(
@@ -667,7 +720,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             if (gripper_z - obj_z) > 5 * cls.moveto_tol:
                 return True
             # Use a more stringent threshold to avoid numerical issues.
-            return KitchenV2Env.Off_holds(state, [obj],
+            return KitchenV3Env.Off_holds(state, [obj],
                                         thresh_pad=cls.turn_knob_tol)
 
         TurnOffKnob = ParameterizedOption(
@@ -700,7 +753,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                 ]
                 print(f"waypoints: {memory['waypoints']}")
                 memory["flag_microwave"] = 0
-                env = getattr(KitchenV2Env, "_current_env", None)
+                env = getattr(KitchenV3Env, "_current_env", None)
                 if env is not None:
                     env.set_joint("microwave", -0.5)
                     print("Set microwave qpos to -0.1")
@@ -714,7 +767,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             elif obj.name == "slide":
                 memory["target_quat"] = angled_quat
             # if obj.name == "microhandle":
-            #     env = getattr(KitchenV2Env, "_current_env", None)
+            #     env = getattr(KitchenV3Env, "_current_env", None)
             #     if env is not None:
             #         env.set_joint("microwave", -1.57)
             #         print("Set microwave qpos to -1.57)")
@@ -848,7 +901,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             
             # print(f"PushOpen action: {arr.tolist()}")
             # print(f"Object angle: {state.get(objects[1], 'angle')}")
-            # print(f"Object open threshold: {KitchenV2Env.hinge_open_thresh}")
+            # print(f"Object open threshold: {KitchenV3Env.hinge_open_thresh}")
             # print(f"Object x: {state.get(objects[1], 'x')}")
             # print(f"Object x threshold: {-0.25}")
             return Action(arr)
@@ -859,16 +912,16 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             del memory, params  # unused
             _, obj = objects
             # Use a more stringent threshold to avoid numerical issues.
-            is_open = KitchenV2Env.Open_holds(
+            is_open = KitchenV3Env.Open_holds(
                 state, [obj], thresh_pad=cls.push_microhandle_thresh_pad)
             # When hinge2 (right_hinge_cabinet) is considered open, set qpos to 0.8
             # if is_open and obj.name == "hinge2":
-            #     env = getattr(KitchenV2Env, "_current_env", None)
+            #     env = getattr(KitchenV3Env, "_current_env", None)
             #     if env is not None:
             #         env.set_joint("right_hinge_cabinet", -1.57)
             #         print("Set right_hinge_cabinet qpos to -1.57")
             # if is_open and obj.name == "microhandle":
-            #     env = getattr(KitchenV2Env, "_current_env", None)
+            #     env = getattr(KitchenV3Env, "_current_env", None)
             #     if env is not None:
             #         env.set_joint("microwave", -1.57)
             #         print("Set microwave qpos to -1.57")
@@ -903,7 +956,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             del memory, params  # unused
             _, obj = objects
             # Use a more stringent threshold to avoid numerical issues.
-            return KitchenV2Env.Closed_holds(
+            return KitchenV3Env.Closed_holds(
                 state, [obj], thresh_pad=cls.push_microhandle_thresh_pad)
 
         PushClose = ParameterizedOption(
@@ -992,49 +1045,43 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             container_name = container.name
             
             # Get object (if object is in objects, use it; otherwise get it from environment)
-            from predicators.envs.kitchen_v2 import KitchenV2Env
-            mug = KitchenV2Env.object_name_to_object("mug")
-            sponge = KitchenV2Env.object_name_to_object("sponge")
-
-            tea = KitchenV2Env.object_name_to_object("tea")
-            milk = KitchenV2Env.object_name_to_object("milk")
+            from predicators.envs.kitchen_v3 import KitchenV3Env
+            mug = KitchenV3Env.object_name_to_object("mug")
+            tea = KitchenV3Env.object_name_to_object("tea")
+            milk = KitchenV3Env.object_name_to_object("milk")
             
             # Check if object is really found (directly call _Contains*_holds method)
             # This method will check if object is in container (consider nearest container and detection threshold)
   
-            found_mug = KitchenV2Env._ContainsMug_holds(state, [objects[0], container])
-            found_sponge = KitchenV2Env._ContainsSponge_holds(state, [objects[0], container])
-            found_tea = KitchenV2Env._ContainsTea_holds(state, [objects[0], container])
-            found_milk = KitchenV2Env._ContainsMilk_holds(state, [objects[0], container])
+            found_mug = KitchenV3Env._ContainsMug_holds(state, [objects[0], container])
+            found_tea = KitchenV3Env._ContainsTea_holds(state, [objects[0], container])
+            found_milk = KitchenV3Env._ContainsMilk_holds(state, [objects[0], container])
             # Update observed status
-            KitchenV2Env.set_container_observed(container_name, True)
+            KitchenV3Env.set_container_observed(container_name, True)
             state.set(container, "observed", True)
             
             # Key: set object.found status based on actual situation
             # Also update environment level status and state variable
             print(f"found_mug: {found_mug}")
             # banana_name = banana.name if hasattr(banana, 'name') else "banana"
-            # KitchenV2Env.set_banana_found(banana_name, found_banana)
+            # KitchenV3Env.set_banana_found(banana_name, found_banana)
             mug_name = mug.name if hasattr(mug, 'name') else "mug"
-            KitchenV2Env.set_mug_found(mug_name, found_mug)
-            sponge_name = sponge.name if hasattr(sponge, 'name') else "sponge"
-            KitchenV2Env.set_sponge_found(sponge_name, found_sponge)
+            KitchenV3Env.set_mug_found(mug_name, found_mug)
             tea_name = tea.name if hasattr(tea, 'name') else "tea"
-            KitchenV2Env.set_tea_found(tea_name, found_tea)
+            KitchenV3Env.set_tea_found(tea_name, found_tea)
             milk_name = milk.name if hasattr(milk, 'name') else "milk"
-            KitchenV2Env.set_milk_found(milk_name, found_milk)
+            KitchenV3Env.set_milk_found(milk_name, found_milk)
             # state.set(banana, "found", found_banana)
             state.set(mug, "found", found_mug)
-            state.set(sponge, "found", found_sponge)
             state.set(tea, "found", found_tea)
             state.set(milk, "found", found_milk)
-            print(f"ObserveContainer terminal: {container_name} observed = True, found_mug = {found_mug}, found_sponge = {found_sponge}, found_tea = {found_tea}, found_milk = {found_milk}")
+            print(f"ObserveContainer terminal: {container_name} observed = True, found_mug = {found_mug}, found_tea = {found_tea}, found_milk = {found_milk}")
             return True
 
-        # ObserveContainer option - unified observe option, requires banana, mug, sponge, and optionally tea
+        # ObserveContainer option - unified observe option for kitchen_v3.
         ObserveContainer = ParameterizedOption(
             "ObserveContainer",
-            types=[gripper_type, hinge_door_type, mug_type, sponge_type, tea_type],
+            types=[gripper_type, hinge_door_type, mug_type, tea_type],
             params_space=Box(-1, 1, (1, )),
             policy=_ObserveContainer_policy,
             initiable=lambda _1, _2, _3, _4: True,  # Standard signature: (state, memory, objects, params)
@@ -1058,9 +1105,9 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             ox = state.get(obj, "x")
             oy = state.get(obj, "y")
             oz = state.get(obj, "z")
-            obj_place_x = KitchenV2Env.obj_name_to_xyz[obj_place.name][0]
-            obj_place_y = KitchenV2Env.obj_name_to_xyz[obj_place.name][1]
-            obj_place_z = KitchenV2Env.obj_name_to_xyz[obj_place.name][2]
+            obj_place_x = KitchenV3Env.obj_name_to_xyz[obj_place.name][0]
+            obj_place_y = KitchenV3Env.obj_name_to_xyz[obj_place.name][1]
+            obj_place_z = KitchenV3Env.obj_name_to_xyz[obj_place.name][2]
             dx, dy, dz = params
             current_pose = (gx, gy, gz)
             target_pose = (ox + dx, oy + dy, oz + dz)
@@ -1068,8 +1115,16 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             home_x, home_y, home_z = cls.home_pos
 
             obj_found = True
-            if obj.name in KitchenV2Env._SEARCHABLE_OBJECTS:
-                obj_found = KitchenV2Env._ObjectFound_holds(state, [obj, obj_place])
+            if obj.name in KitchenV3Env._SEARCHABLE_OBJECTS:
+                # Cabinet/microwave sites use ObjectFound (requires `observed`);
+                # countertop_site has no `observed` — use same geometry as Mug/TeaOnCountertop.
+                if "observed" in obj_place.type.feature_names:
+                    obj_found = KitchenV3Env._ObjectFound_holds(
+                        state, [obj, obj_place])
+                elif obj_place.name == "countertop":
+                    obj_found = KitchenV3Env._OnTop_holds(state, [obj, obj_place])
+                else:
+                    obj_found = True
             if not obj_found:
                 print(f"obj not found: {obj.name}")
                 raise ApproachFailure(f"plan exhausted")
@@ -1146,8 +1201,6 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             tol = 0.05
             if obj_place.name == "hinge2":
                 tol = 0.05
-                if obj.name == "sponge":
-                    tol = 0.07
                 if obj.name == "mug":
                     tol = 0.07
                 if obj.name == "tea":
@@ -1272,7 +1325,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
                     obj_quat = np.array([1.0, 0.0, 0.0, 0.0])  # Default: no rotation
                 
                 # Set grasped status and record relative pose
-                KitchenV2Env.set_grippable_object_grasped(
+                KitchenV3Env.set_grippable_object_grasped(
                     obj_name, grasped=True,
                     gripper_pos=gripper_pos,
                     gripper_quat=gripper_quat,
@@ -1315,8 +1368,48 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             current_pose = (gx, gy, gz)
             target_pose = (tx, ty, tz)
             current_quat = (gqw, gqx, gqy, gqz)
-            # Turn the knobs by pushing from a "forward" position.
 
+            # MoveTeaToMug: end above mug centre, z offset +0.2 m.
+            if (
+                obj.name == "tea"
+                and origin.name == "countertop"
+                and destination.name == "mug"
+            ):
+                target_quat = angled_quat
+                mx = state.get(destination, "x")
+                my = state.get(destination, "y")
+                mz = state.get(destination, "z")
+                memory["waypoints"] = [
+                    ((gx, gy - 0.05, gz + 0.05), current_quat),
+                    (cls.home_pos, angled_quat),
+                    ((mx + dx, my + dy, mz + dz + 0.2), target_quat),
+                ]
+                print(f"MoveToTarget MoveTeaToMug waypoints: {memory['waypoints']}")
+                return True
+
+            # MoveTeaFromMugToCountertop
+            if (
+                obj.name == "tea"
+                and origin.name == "mug"
+                and destination.name == "countertop"
+            ):
+                target_quat = angled_quat
+                cx = state.get(destination, "x")
+                cy = state.get(destination, "y")
+                cz = state.get(destination, "z")
+                memory["waypoints"] = [
+                    ((gx, gy, gz + 0.1), current_quat),
+                    (cls.home_pos, angled_quat),
+                    ((cx + dx, cy + dy, cz + dz + 0.15), target_quat),
+                    ((cx + dx, cy + dy, cz + dz), target_quat),
+                ]
+                print(
+                    f"MoveToTarget MoveTeaFromMugToCountertop waypoints:"
+                    f" {memory['waypoints']}"
+                )
+                return True
+
+            # Turn the knobs by pushing from a "forward" position.
 
             init_quat = down_quat
             target_quat = down_quat
@@ -1425,8 +1518,21 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             reached = reached_by_gripper
             # print(f"Object Distance: {np.linalg.norm(np.array([ox, oy, oz]) - np.array((tx, ty, tz)))}, XY Distance: {distance_xy}")
             # Align ``Unlocked(hinge2)`` with executed UnlockHinge (MoveToTarget).
-            if reached and obj.name == "keycard" and destination.name == "hinge2":
-                KitchenV2Env.set_hinge2_unlocked(True)
+            if reached:
+                if obj.name == "keycard" and destination.name == "hinge2":
+                    KitchenV3Env.set_hinge2_unlocked(True)
+                if (
+                    obj.name == "tea"
+                    and origin.name == "countertop"
+                    and destination.name == "mug"
+                ):
+                    KitchenV3Env.set_at_pre_pour(obj.name, destination.name, True)
+                if (
+                    obj.name == "tea"
+                    and origin.name == "mug"
+                    and destination.name == "countertop"
+                ):
+                    KitchenV3Env.set_at_pre_pour(obj.name, origin.name, False)
             return reached
 
         MoveToTarget = ParameterizedOption(
@@ -1468,18 +1574,89 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             # if is_open:
             obj_name = obj.name
             # Release the object (clear grasped status and relative pose)
-            KitchenV2Env.set_grippable_object_grasped(obj_name, grasped=False)
+            KitchenV3Env.set_grippable_object_grasped(obj_name, grasped=False)
             print(f"Object {obj_name} released. Physics restored.")
 
             return True
 
+        def _MakeTea_initiable(state: State, memory: Dict,
+                               objects: Sequence[Object], params: Array) -> bool:
+            del params
+            gripper = objects[0]
+            gqw = state.get(gripper, "qw")
+            gqx = state.get(gripper, "qx")
+            gqy = state.get(gripper, "qy")
+            gqz = state.get(gripper, "qz")
+            euler0 = quat2euler(np.array([gqw, gqx, gqy, gqz]))
+            euler_pour = euler0 + np.array([0.0, np.pi / 4, 0.0])
+            quat_pour = euler2quat(tuple(euler_pour.tolist()))
+            quat_reset = euler2quat(tuple(euler0.tolist()))
+            memory["make_tea_quat_targets"] = [
+                np.asarray(quat_pour, dtype=np.float32),
+                np.asarray(quat_reset, dtype=np.float32),
+            ]
+            memory["make_tea_target_idx"] = 0
+            return True
+
+        def _MakeTea_policy(state: State, memory: Dict,
+                            objects: Sequence[Object], params: Array) -> Action:
+            del params
+            gripper = objects[0]
+            tea_obj = objects[1]
+            gqw = state.get(gripper, "qw")
+            gqx = state.get(gripper, "qx")
+            gqy = state.get(gripper, "qy")
+            gqz = state.get(gripper, "qz")
+            targets = memory.get("make_tea_quat_targets", [])
+            idx = int(memory.get("make_tea_target_idx", 0))
+            if idx >= len(targets):
+                grip = cls._move_carry_grip_command(state, gripper, tea_obj)
+                return Action(
+                    np.array([0., 0., 0., 0., 0., 0., grip], dtype=np.float32))
+            way_quat = targets[idx]
+            current_euler = quat2euler(np.array([gqw, gqx, gqy, gqz]))
+            target_euler = quat2euler(np.asarray(way_quat, dtype=float))
+            droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+            motion_arr = np.array([0., 0., 0., droll, dpitch, dyaw], dtype=np.float32)
+            ori_norm = np.linalg.norm(motion_arr[3:])
+            if ori_norm > 1e-8 and ori_norm > cls.max_delta_mag:
+                scale = cls.max_delta_mag / ori_norm
+                motion_arr = motion_arr * scale
+            grip = cls._move_carry_grip_command(state, gripper, tea_obj)
+            arr = np.concatenate(
+                [motion_arr, np.array([grip], dtype=np.float32)])
+            return Action(arr)
+
         def _MakeTea_terminal(state: State, memory: Dict,
                               objects: Sequence[Object], params: Array) -> bool:
-            done = _Place_terminal(state, memory, objects, params)
-            if done:
+            del params
+            targets = memory.get("make_tea_quat_targets", [])
+            idx = int(memory.get("make_tea_target_idx", 0))
+            if idx >= len(targets):
                 tea_obj = objects[1]
-                KitchenV2Env.set_tea_made(tea_obj.name, True)
-            return done
+                KitchenV3Env.set_tea_made(tea_obj.name, True)
+                return True
+            gripper = objects[0]
+            gqw = state.get(gripper, "qw")
+            gqx = state.get(gripper, "qx")
+            gqy = state.get(gripper, "qy")
+            gqz = state.get(gripper, "qz")
+            way_quat = targets[idx]
+            current_euler = quat2euler(np.array([gqw, gqx, gqy, gqz]))
+            target_euler = quat2euler(np.asarray(way_quat, dtype=float))
+            droll, dpitch, dyaw = subtract_euler(target_euler, current_euler)
+            ang_tol = 0.1
+            if (
+                abs(droll) < ang_tol
+                and abs(dpitch) < ang_tol
+                and abs(dyaw) < ang_tol
+            ):
+                memory["make_tea_target_idx"] = idx + 1
+                if memory["make_tea_target_idx"] >= len(targets):
+                    tea_obj = objects[1]
+                    KitchenV3Env.set_tea_made(tea_obj.name, True)
+                    return True
+            return False
 
         Place = ParameterizedOption(
             "Place",
@@ -1490,23 +1667,22 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             terminal=_Place_terminal)
         options.add(Place)
 
-        WashMug = ParameterizedOption(
-            "WashMug",
-            types=[gripper_type, grippable_object_type, grippable_object_type, object_type],
-            params_space=Box(-5, 5, (3, )),
-            policy=_Place_policy,
-            initiable=lambda _1, _2, _3, _4: True,
-            terminal=_Place_terminal)
-        options.add(WashMug)
-
         MakeTea = ParameterizedOption(
             "MakeTea",
             types=[gripper_type, grippable_object_type, grippable_object_type, object_type],
             params_space=Box(-5, 5, (3, )),
-            policy=_Place_policy,
-            initiable=lambda _1, _2, _3, _4: True,
+            policy=_MakeTea_policy,
+            initiable=_MakeTea_initiable,
             terminal=_MakeTea_terminal)
         options.add(MakeTea)
+
+        def _PlaceTeaOnTable_terminal(
+                state: State, memory: Dict, objects: Sequence[Object],
+                params: Array) -> bool:
+            done = _Place_terminal(state, memory, objects, params)
+            if done:
+                KitchenV3Env.clear_at_pre_pour_for_tea(objects[1].name)
+            return done
 
         PlaceTeaOnTable = ParameterizedOption(
             "PlaceTeaOnTable",
@@ -1514,7 +1690,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
             params_space=Box(-5, 5, (3, )),
             policy=_Place_policy,
             initiable=lambda _1, _2, _3, _4: True,
-            terminal=_Place_terminal)
+            terminal=_PlaceTeaOnTable_terminal)
         options.add(PlaceTeaOnTable)
 
         PlaceMilkOnTable = ParameterizedOption(
@@ -1624,7 +1800,7 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
         #     del memory, params  # unused
         #     _, obj = objects
         #     # Use a more stringent threshold to avoid numerical issues.
-        #     return KitchenV2Env.Open_holds(
+        #     return KitchenV3Env.Open_holds(
         #         state, [obj], thresh_pad=cls.push_microhandle_thresh_pad)
 
         # OpenContainer = ParameterizedOption(
@@ -1637,3 +1813,4 @@ class KitchenV2GroundTruthOptionFactory(GroundTruthOptionFactory):
         # options.add(OpenContainer)
 
         return options
+
